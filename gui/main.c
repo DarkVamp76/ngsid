@@ -544,7 +544,7 @@ static void job_start(int kind, const char *path) {
     SDL_AtomicSet(&job.state, 1);
     SDL_Thread *t = SDL_CreateThread(job_fn, "hvsc", NULL);
     if (t) SDL_DetachThread(t);
-    else { SDL_AtomicSet(&job.state, 0); snprintf(br_msg, sizeof br_msg, "Thread-Fehler"); }
+    else { SDL_AtomicSet(&job.state, 0); snprintf(br_msg, sizeof br_msg, "Thread error"); }
 }
 
 static int browse_cur_row(void) {
@@ -584,7 +584,7 @@ static void job_poll(void) {
         }
     } else {
         free(job.res);
-        snprintf(br_msg, sizeof br_msg, "%s", job.rc == HVSC_ERR_NOCURL ? "curl nicht gefunden" : "HVSC nicht erreichbar");
+        snprintf(br_msg, sizeof br_msg, "%s", job.rc == HVSC_ERR_NOCURL ? "curl not found" : "HVSC unreachable");
     }
     SDL_AtomicSet(&job.state, 0);
 }
@@ -834,7 +834,7 @@ static void draw_voice(int v, float x, float y, float w, float h, const vis_t *v
     /* mute overlay */
     if (muted) {
         rrect(x, y, w, h, 14, C(0.03f, 0.04f, 0.07f, 0.55f));
-        text(x + w / 2 - text_width("STUMM", 22) / 2, y + 62, 22, VC[2], "STUMM");
+        text(x + w / 2 - text_width("MUTED", 22) / 2, y + 62, 22, VC[2], "MUTED");
     }
     (void)t;
 }
@@ -854,9 +854,9 @@ static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
     }
     if (!vs->running) { changes = 0; active = 0; }
     float rate = (float)changes * (float)g_rate / NGSID_BLOCK;
-    text(x + 16, y + 12, 13, DIM, "DIGI-KANAL");
-    text(x + 16, y + 30, 11, FAINT, "Samples \xfc" "ber das");
-    text(x + 16, y + 44, 11, FAINT, "Lautst\xe4rkeregister");
+    text(x + 16, y + 12, 13, DIM, "DIGI CHANNEL");
+    text(x + 16, y + 30, 11, FAINT, "Samples via the");
+    text(x + 16, y + 44, 11, FAINT, "volume register");
     char b[48];
     snprintf(b, sizeof b, "%.1f kHz", rate / 1000.0f);
     text(x + 16, y + 66, 13, alpha(active && !muted ? dc : DIM, active ? 1.0f : 0.5f), active ? b : "--");
@@ -901,7 +901,7 @@ static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
             }
     if (muted) {
         rrect(x, y, w, h, 14, C(0.03f, 0.04f, 0.07f, 0.55f));
-        text(x + w / 2 - text_width("STUMM", 22) / 2, y + h / 2 - 14, 22, VC[2], "STUMM");
+        text(x + w / 2 - text_width("MUTED", 22) / 2, y + h / 2 - 14, 22, VC[2], "MUTED");
     }
 }
 
@@ -1009,12 +1009,12 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             }
         }
         if (!browse && !npl) {
-            text(x + 18, y + 60, 14, DIM, "Keine Dateien.");
-            text(x + 18, y + 84, 13, FAINT, "SID-Dateien oder einen");
-            text(x + 18, y + 102, 13, FAINT, "Ordner ins Fenster ziehen.");
+            text(x + 18, y + 60, 14, DIM, "No files.");
+            text(x + 18, y + 84, 13, FAINT, "Drag SID files or a");
+            text(x + 18, y + 102, 13, FAINT, "folder into the window.");
         }
         if (browse) {
-            const char *st = SDL_AtomicGet(&job.state) ? "Lade ..." : br_msg;
+            const char *st = SDL_AtomicGet(&job.state) ? "Loading ..." : br_msg;
             if (*st) text(x + 18, y + h - 50, 12, SDL_AtomicGet(&job.state) ? DIM : VC[1], st);
         }
         if (count > vis_rows) {   /* scrollbar */
@@ -1074,7 +1074,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             char sb[48];
             snprintf(sb, sizeof sb, "SONG %d / %d", tn->song, tn->info.songs);
             text_right(ax + aw - 22, hy + 66, 16, VC[0], sb);
-            if (g_paused) text_right(ax + aw - 22, hy + 88, 13, VC[2], "PAUSE");
+            if (g_paused) text_right(ax + aw - 22, hy + 88, 13, VC[2], "PAUSED");
         }
     }
 
@@ -1131,7 +1131,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
     if (sh < 120) sh = 120;
     float vuw = 132, spw = aw - vuw - M;
     card(ax, sy, spw, sh, 0);
-    text(ax + 18, sy + 12, 12, DIM, "SPEKTRUM");
+    text(ax + 18, sy + 12, 12, DIM, "SPECTRUM");
     {
         float bx = ax + 18, bw = spw - 36, by0 = sy + 34, bh = (sh - 34 - 36) * 0.74f, base = by0 + bh;
         for (int g = 0; g <= 4; g++) {
@@ -1170,7 +1170,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
     {
         float x = ax + spw + M, w = vuw;
         card(x, sy, w, sh, 0);
-        text(x + 18, sy + 12, 12, DIM, "PEGEL");
+        text(x + 18, sy + 12, 12, DIM, "LEVEL");
         float my0 = sy + 34, mh = sh - 34 - 38, mw = 26;
         enum { SEG = 24 };
         for (int c = 0; c < 2; c++) {
@@ -1217,8 +1217,8 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
                 click = 0;
             }
         }
-        text(bx + 190, cy - 16, 11, FAINT, "Leertaste Pause  \xb7  Pfeile links/rechts Song  \xb7  hoch/runter Datei");
-        text(bx + 190, cy + 2, 11, FAINT, "1-4 Voice/Digi stumm  \xb7  +/- Lautst\xe4rke  \xb7  F Vollbild  \xb7  Esc Ende");
+        text(bx + 190, cy - 16, 11, FAINT, "Space pause  \xb7  Left/Right song  \xb7  Up/Down file");
+        text(bx + 190, cy + 2, 11, FAINT, "1-4 mute voice/digi  \xb7  +/- volume  \xb7  F fullscreen  \xb7  Esc quit");
         float vx = bx + bw - 22 - 170, vyb = cy - 3;
         text(vx - 44, cy - 9, 12, DIM, "VOL");
         rrect(vx, vyb, 170, 6, 3, alpha(FAINT, 0.4f));

@@ -20,6 +20,11 @@ It is an independent re-implementation. It contains **no code and no binaries fr
 observation of how the original behaves. The original author is not affiliated with this project and has not
 endorsed it. If you are Oliver and have concerns, please open an issue.
 
+<p align="center">
+  <img src="docs/screenshot-1.png" alt="ngSid playing Rob Hubbard Hiscore Mix" width="48%">
+  <img src="docs/screenshot-2.png" alt="ngSid playing Spherical" width="48%">
+</p>
+
 ## Features
 
 - **Full 6510 CPU** with a minimal KERNAL/CIA/VIC environment: PSID v1-v4 and RSID, VBI and CIA-timed play routines

@@ -1,8 +1,5 @@
 # build products
-sid_play
-sid_wav
-sid_gui
-ngsid_wav
+ngSid
 ngsid_test
 cpu_test
 c64_test

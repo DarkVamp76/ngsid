@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=ngSid
+GenericName=SID Player
+Comment=NextGenSid - C64 SID music player with online HVSC browser
+Comment[de]=NextGenSid - C64-SID-Musikplayer mit Online-HVSC-Browser
+Exec=ngSid %f
+Icon=ngsid
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+MimeType=audio/prs.sid;audio/x-sid;
+Keywords=SID;C64;Commodore;HVSC;chiptune;
+StartupWMClass=ngSid

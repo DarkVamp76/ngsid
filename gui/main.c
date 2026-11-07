@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* ngSid - OpenGL 3.3 SID player (NextGenSid).
  *
- *   ngSid [options] file.sid|directory ...
+ *   ngSid [options] [file.sid|directory ...]     (no argument: opens the online HVSC browser)
  *
  * Window, input and audio come from SDL2; everything on screen is drawn through one small
  * batched OpenGL renderer (rounded rectangles as signed distance fields, soft glow lines,
  * a baked DejaVu Sans atlas). OpenGL is loaded at run time via SDL_GL_GetProcAddress, so
  * only libSDL2 is needed at link time.
  *
- * Keys: Space pause, Left/Right song, Up/Down file, 1-3 mute voice, 4 mute digi, +/- volume, [ ] digi gain,
+ * Keys: B HVSC online browser (Backspace = folder up; needs curl), Space pause, Left/Right song, Up/Down file, 1-3 mute voice, 4 mute digi, +/- volume, [ ] digi gain,
  *       R restart, F or F11 fullscreen, Esc quit. Mouse: click a voice card to mute it,
  *       click the playlist, drag the volume bar. Drop .sid files or folders onto the window.
  *
@@ -19,6 +19,7 @@
 #define _DEFAULT_SOURCE
 #include "../psid.h"
 #include "font_data.h"
+#include "hvsc.h"
 
 #include <SDL2/SDL.h>
 
@@ -450,7 +451,7 @@ static int tune_load(const char *path, int song, tune_t **out_info) {
 
 /* ================================================================== playlist */
 
-typedef struct { char *path; char label[128]; } entry;
+typedef struct { char *path; char label[128]; char *rel; } entry;   /* rel: HVSC path if fetched online */
 static entry *pl;
 static int npl, cur = -1, cur_song = 1;
 static float list_scroll;
@@ -464,6 +465,7 @@ static int is_sid_name(const char *n) {
 static void add_file(const char *path) {
     pl = (entry *)realloc(pl, (size_t)(npl + 1) * sizeof *pl);
     pl[npl].path = strdup(path);
+    pl[npl].rel = NULL;
     const char *b = strrchr(path, '/');
     b = b ? b + 1 : path;
     char tmp[200];
@@ -504,6 +506,124 @@ static void play_index(int idx, int song) {
     list_follow = 1;
     tune_load(pl[idx].path, song, NULL);
     cur_song = g_tune ? g_tune->song : 1;
+}
+
+/* ---- online HVSC browser: folder listings and tunes are fetched by a worker thread */
+
+/* row of the playing tune in the current HVSC folder (-1 if it is elsewhere) */
+static int browse_cur_row(void);
+static int browse;                       /* sidebar shows the HVSC browser instead of the playlist */
+static char rpath[768];                  /* current folder, "" = root, else "MUSICIANS/H/" */
+static hvsc_entry *be;
+static int nbe;
+static float br_scroll;
+static int br_sel, br_follow;            /* keyboard cursor row, scroll-into-view request */
+static char br_focus[160];               /* folder name to put the cursor on after the next listing */
+static char br_msg[96];
+static struct {
+    SDL_atomic_t state;                  /* 0 idle, 1 running, 2 done */
+    int kind, rc, nres;                  /* kind 0 = list folder, 1 = fetch file */
+    char path[768], file[1024];
+    hvsc_entry *res;
+} job;
+
+static int job_fn(void *ud) {
+    (void)ud;
+    if (job.kind == 0) job.rc = hvsc_list(job.path, &job.res, &job.nres);
+    else job.rc = hvsc_fetch(job.path, job.file, sizeof job.file);
+    SDL_AtomicSet(&job.state, 2);
+    return 0;
+}
+
+static void job_start(int kind, const char *path) {
+    if (SDL_AtomicGet(&job.state)) return;
+    job.kind = kind;
+    snprintf(job.path, sizeof job.path, "%s", path);
+    job.res = NULL; job.nres = 0; job.rc = 0;
+    br_msg[0] = 0;
+    SDL_AtomicSet(&job.state, 1);
+    SDL_Thread *t = SDL_CreateThread(job_fn, "hvsc", NULL);
+    if (t) SDL_DetachThread(t);
+    else { SDL_AtomicSet(&job.state, 0); snprintf(br_msg, sizeof br_msg, "Thread-Fehler"); }
+}
+
+static int browse_cur_row(void) {
+    if (cur < 0 || cur >= npl || !pl[cur].rel) return -1;
+    size_t rl = strlen(rpath);
+    if (strncmp(pl[cur].rel, rpath, rl)) return -1;
+    const char *rest = pl[cur].rel + rl;
+    int off = rpath[0] ? 1 : 0;
+    for (int i = 0; i < nbe; i++)
+        if (!be[i].dir && !strcmp(be[i].name, rest)) return i + off;
+    return -1;
+}
+
+static void job_poll(void) {
+    if (SDL_AtomicGet(&job.state) != 2) return;
+    if (job.rc == 0) {
+        if (job.kind == 0) {
+            free(be);
+            be = job.res;
+            nbe = job.nres;
+            snprintf(rpath, sizeof rpath, "%s", job.path);
+            br_scroll = 0;
+            int off = job.path[0] ? 1 : 0, cr = browse_cur_row();
+            br_sel = off < nbe + off ? off : 0;
+            if (br_focus[0]) {
+                for (int i = 0; i < nbe; i++) if (be[i].dir && !strcmp(be[i].name, br_focus)) { br_sel = i + off; break; }
+            } else if (cr >= 0)
+                br_sel = cr;
+            br_focus[0] = 0;
+            br_follow = 1;
+        } else {
+            int idx = -1;
+            for (int i = 0; i < npl; i++) if (!strcmp(pl[i].path, job.file)) { idx = i; break; }
+            if (idx < 0) { add_file(job.file); idx = npl - 1; }
+            if (!pl[idx].rel) pl[idx].rel = strdup(job.path);
+            play_index(idx, 0);
+        }
+    } else {
+        free(job.res);
+        snprintf(br_msg, sizeof br_msg, "%s", job.rc == HVSC_ERR_NOCURL ? "curl nicht gefunden" : "HVSC nicht erreichbar");
+    }
+    SDL_AtomicSet(&job.state, 0);
+}
+
+static void browse_open(void) {
+    browse = 1;
+    if (!nbe && !rpath[0] && !SDL_AtomicGet(&job.state)) job_start(0, "");
+}
+
+static void browse_up(void) {
+    if (!rpath[0]) return;
+    char up[768];
+    snprintf(up, sizeof up, "%s", rpath);
+    size_t l = strlen(up);
+    if (l) up[--l] = 0;                  /* drop trailing '/' */
+    char *sl = strrchr(up, '/');
+    snprintf(br_focus, sizeof br_focus, "%s", sl ? sl + 1 : up);   /* cursor lands on the folder we left */
+    if (sl) sl[1] = 0; else up[0] = 0;
+    job_start(0, up);
+}
+
+/* row 0 is ".." below the root, then the entries */
+static void browse_activate(int row) {
+    int off = rpath[0] ? 1 : 0;
+    if (off && row == 0) { browse_up(); return; }
+    int i = row - off;
+    if (i < 0 || i >= nbe) return;
+    char path[1024];
+    snprintf(path, sizeof path, "%s%s%s", rpath, be[i].name, be[i].dir ? "/" : "");
+    job_start(be[i].dir ? 0 : 1, path);
+}
+
+static void browse_move(int delta) {
+    int count = nbe + (rpath[0] ? 1 : 0);
+    if (count <= 0) return;
+    br_sel += delta;
+    if (br_sel < 0) br_sel = 0;
+    if (br_sel > count - 1) br_sel = count - 1;
+    br_follow = 1;
 }
 
 static void change_song(int delta) {
@@ -810,50 +930,100 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
     {
         float x = M, y = M, w = SB, h = H - 2 * M;
         card(x, y, w, h, 0);
-        text(x + 18, y + 14, 13, DIM, "PLAYLIST");
+        float tw1 = text_width("PLAYLIST", 13);
+        text(x + 18, y + 14, 13, browse ? FAINT : TXT, "PLAYLIST");
+        text(x + 18 + tw1 + 22, y + 14, 13, browse ? TXT : FAINT, "HVSC ONLINE");
+        if (clicked(x + 12, y + 8, tw1 + 16, 26)) { browse = 0; click = 0; }
+        else if (clicked(x + 18 + tw1 + 14, y + 8, text_width("HVSC ONLINE", 13) + 16, 26)) { browse_open(); click = 0; }
+        int boff = rpath[0] ? 1 : 0;
+        int count = browse ? nbe + boff : npl;
         char cnt[32];
-        snprintf(cnt, sizeof cnt, "%d", npl);
+        snprintf(cnt, sizeof cnt, "%d", browse ? nbe : npl);
         text_right(x + w - 18, y + 14, 13, DIM, cnt);
         float ry = y + 44, rh = 28, area = h - 44 - 40;
+        if (browse) {
+            char crumb[800];
+            snprintf(crumb, sizeof crumb, "/%s", rpath);
+            fit_text(crumb, w - 36, 12);
+            text(x + 18, ry, 12, FAINT, crumb);
+            ry += 22; area -= 22 + 18;
+        }
+        float *sc = browse ? &br_scroll : &list_scroll;
         int vis_rows = (int)(area / rh);
-        int maxscroll = npl > vis_rows ? npl - vis_rows : 0;
-        if (list_follow && cur >= 0) {
-            if (cur < list_scroll) list_scroll = (float)cur;
-            if (cur >= list_scroll + vis_rows) list_scroll = (float)(cur - vis_rows + 1);
+        int maxscroll = count > vis_rows ? count - vis_rows : 0;
+        if (!browse && list_follow && cur >= 0) {
+            if (cur < *sc) *sc = (float)cur;
+            if (cur >= *sc + vis_rows) *sc = (float)(cur - vis_rows + 1);
             list_follow = 0;
         }
-        if (list_scroll > maxscroll) list_scroll = (float)maxscroll;
-        if (list_scroll < 0) list_scroll = 0;
-        int first = (int)list_scroll;
-        for (int r = 0; r < vis_rows + 1 && first + r < npl; r++) {
+        if (browse && br_follow) {
+            if (br_sel < *sc) *sc = (float)br_sel;
+            if (br_sel >= *sc + vis_rows) *sc = (float)(br_sel - vis_rows + 1);
+            br_follow = 0;
+        }
+        if (*sc > maxscroll) *sc = (float)maxscroll;
+        if (*sc < 0) *sc = 0;
+        int first = (int)*sc;
+        for (int r = 0; r < vis_rows + 1 && first + r < count; r++) {
             int i = first + r;
             float yy = ry + r * rh;
             if (yy + rh > y + h - 36) break;
-            int isc = i == cur;
+            int isc = !browse && i == cur, anc = 0;
+            if (browse) {
+                isc = i == browse_cur_row();
+                if (!isc && i >= boff && be[i - boff].dir && cur >= 0 && pl[cur].rel) {
+                    size_t rl = strlen(rpath), nl = strlen(be[i - boff].name);
+                    anc = !strncmp(pl[cur].rel, rpath, rl) && !strncmp(pl[cur].rel + rl, be[i - boff].name, nl) && pl[cur].rel[rl + nl] == '/';
+                }
+            }
             int hv = hit(x + 8, yy, w - 16, rh);
+            if (browse && i == br_sel) rrect(x + 8, yy, w - 16, rh - 2, 8, alpha(EDGE, 0.55f));
             if (isc) {
                 rrect(x + 8, yy, w - 16, rh - 2, 8, alpha(VC[0], 0.16f));
                 rrect(x + 8, yy + 5, 3, rh - 12, 1.5f, VC[0]);
+            } else if (anc) {
+                rrect(x + 8, yy, w - 16, rh - 2, 8, alpha(VC[0], 0.07f));
+                rrect(x + 8, yy + 5, 3, rh - 12, 1.5f, alpha(VC[0], 0.45f));
             } else if (hv)
                 rrect(x + 8, yy, w - 16, rh - 2, 8, alpha(EDGE, 0.25f));
-            char lab[160];
-            snprintf(lab, sizeof lab, "%s", pl[i].label);
+            char lab[260];
+            int isdir = 0;
+            if (!browse)
+                snprintf(lab, sizeof lab, "%s", pl[i].label);
+            else if (boff && i == 0) { snprintf(lab, sizeof lab, ".."); isdir = 1; }
+            else {
+                const hvsc_entry *en = &be[i - boff];
+                char tmp[200];
+                utf8_to_latin1(en->name, tmp, sizeof tmp);
+                size_t tl = strlen(tmp);
+                if (!en->dir && tl > 4) tmp[tl - 4] = 0;
+                for (char *q = tmp; *q; q++) if (*q == '_') *q = ' ';
+                snprintf(lab, sizeof lab, "%s%s", tmp, en->dir ? "/" : "");
+                isdir = en->dir;
+            }
             fit_text(lab, w - 52, 14);
-            text(x + 20, yy + 5, 14, isc ? TXT : DIM, lab);
-            if (clicked(x + 8, yy, w - 16, rh)) { play_index(i, 0); click = 0; }
+            text(x + 20, yy + 5, 14, isc || isdir ? TXT : DIM, lab);
+            if (clicked(x + 8, yy, w - 16, rh)) {
+                if (browse) { br_sel = i; browse_activate(i); } else play_index(i, 0);
+                click = 0;
+            }
         }
-        if (!npl) {
+        if (!browse && !npl) {
             text(x + 18, y + 60, 14, DIM, "Keine Dateien.");
             text(x + 18, y + 84, 13, FAINT, "SID-Dateien oder einen");
             text(x + 18, y + 102, 13, FAINT, "Ordner ins Fenster ziehen.");
         }
-        if (npl > vis_rows) {   /* scrollbar */
-            float th = area * vis_rows / npl;
+        if (browse) {
+            const char *st = SDL_AtomicGet(&job.state) ? "Lade ..." : br_msg;
+            if (*st) text(x + 18, y + h - 50, 12, SDL_AtomicGet(&job.state) ? DIM : VC[1], st);
+        }
+        if (count > vis_rows) {   /* scrollbar */
+            float th = area * vis_rows / count;
             if (th < 24) th = 24;
-            float ty = ry + (area - th) * (maxscroll ? list_scroll / maxscroll : 0);
+            float ty = ry + (area - th) * (maxscroll ? *sc / maxscroll : 0);
             rrect(x + w - 8, ty, 3, th, 1.5f, alpha(DIM, 0.5f));
         }
-        text(x + 18, y + h - 28, 11, FAINT, "ngsid  \xb7  VacSid Clean-Room");
+        text(x + 18, y + h - 28, 11, FAINT, "ngSid  \xb7  NextGenSid");
     }
 
     float ax = M + SB + M, aw = W - ax - M;
@@ -868,8 +1038,8 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             snprintf(title, sizeof title, "%s", tn->info.name[0] ? tn->info.name : (cur >= 0 ? pl[cur].label : ""));
             snprintf(sub, sizeof sub, "%s%s%s", tn->info.author, tn->info.released[0] ? "  \xb7  " : "", tn->info.released);
         } else {
-            snprintf(title, sizeof title, "ngsid");
-            snprintf(sub, sizeof sub, "SID-Player  \xb7  Clean-Room Nachbau von VacSid");
+            snprintf(title, sizeof title, "ngSid");
+            snprintf(sub, sizeof sub, "SID-Player  \xb7  basiert auf VacSid von Oliver Blasnik");
         }
         float tsize = 32;
         while (tsize > 18 && text_width(title, tsize) > aw - 220) tsize -= 2;
@@ -1114,7 +1284,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             printf("usage: %s [--pal|--ntsc] [--rate N] [--exact-clock] [--limiter|--no-limiter] [--digi-wrap]\n"
                    "       [--filter-clamp] [--no-vol-burst] [--digi-gain N] [--vbi] [-s song]\n"
-                   "       [--screenshot out.bmp [--frames N]] file.sid|dir ...\n", argv[0]);
+                   "       [--screenshot out.bmp [--frames N]] [file.sid|dir ...]\n", argv[0]);
             return 0;
         } else if (argv[i][0] == '-' && argv[i][1]) { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
         else add_path(argv[i], 0);
@@ -1179,6 +1349,7 @@ int main(int argc, char **argv) {
     else SDL_PauseAudioDevice(g_dev, 0);
 
     if (npl) play_index(0, first_song);
+    else if (!shot) browse_open();   /* nothing given: start in the online HVSC browser */
 
     int running = 1, frame = 0, fullscreen = 0;
     Uint64 t0 = SDL_GetPerformanceCounter(), tlast = t0;
@@ -1194,7 +1365,7 @@ int main(int argc, char **argv) {
                 break;
             case SDL_MOUSEBUTTONUP: if (e.button.button == SDL_BUTTON_LEFT) mouse_down = 0; break;
             case SDL_MOUSEWHEEL:
-                if (mx < 16 + 288 + 16) { list_scroll -= e.wheel.y * 3; }
+                if (mx < 16 + 288 + 16) { if (browse) br_scroll -= e.wheel.y * 3; else list_scroll -= e.wheel.y * 3; }
                 break;
             case SDL_DROPFILE: {
                 int was = npl;
@@ -1209,8 +1380,15 @@ int main(int argc, char **argv) {
                 case SDLK_SPACE: g_paused = !g_paused; break;
                 case SDLK_LEFT: change_song(-1); break;
                 case SDLK_RIGHT: change_song(1); break;
-                case SDLK_UP: change_file(-1); break;
-                case SDLK_DOWN: change_file(1); break;
+                case SDLK_UP: if (browse) browse_move(-1); else change_file(-1); break;
+                case SDLK_DOWN: if (browse) browse_move(1); else change_file(1); break;
+                case SDLK_PAGEUP: if (browse) browse_move(-10); break;
+                case SDLK_PAGEDOWN: if (browse) browse_move(10); break;
+                case SDLK_HOME: if (browse) browse_move(-100000); break;
+                case SDLK_END: if (browse) browse_move(100000); break;
+                case SDLK_RETURN: case SDLK_KP_ENTER: if (browse) browse_activate(br_sel); break;
+                case SDLK_b: if (browse) browse = 0; else browse_open(); break;
+                case SDLK_BACKSPACE: if (browse) browse_up(); break;
                 case SDLK_r: if (cur >= 0) play_index(cur, cur_song); break;
                 case SDLK_LEFTBRACKET: case SDLK_RIGHTBRACKET:
                     g_cfg.digi_gain += e.key.keysym.sym == SDLK_RIGHTBRACKET ? 5 : -5;
@@ -1249,6 +1427,7 @@ int main(int argc, char **argv) {
         mx = (float)mxi * k; my = (float)myi * k;
         if (click) { clickx = (int)(clickx * k); clicky = (int)(clicky * k); }
 
+        job_poll();
         Uint64 now = SDL_GetPerformanceCounter();
         double dt = (double)(now - tlast) / freq;
         tlast = now;

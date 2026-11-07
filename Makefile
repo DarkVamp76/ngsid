@@ -9,11 +9,16 @@ HDR = psid.h c64.h cpu6510.h ngsid.h
 
 all: ngSid
 
-ngSid: gui/main.c gui/font_data.h $(SRC) $(HDR)
-	$(CC) $(CFLAGS) -I. -Igui -o $@ gui/main.c $(SRC) $$(pkg-config --cflags --libs sdl2) $(LDLIBS)
+ngSid: gui/main.c gui/hvsc.c gui/hvsc.h gui/font_data.h $(SRC) $(HDR)
+	$(CC) $(CFLAGS) -I. -Igui -o $@ gui/main.c gui/hvsc.c $(SRC) $$(pkg-config --cflags --libs sdl2) $(LDLIBS)
 
 install: ngSid
 	install -Dm755 ngSid $(DESTDIR)$(PREFIX)/bin/ngSid
+	install -Dm644 packaging/ngsid.desktop $(DESTDIR)$(PREFIX)/share/applications/ngsid.desktop
+	install -Dm644 packaging/ngsid.svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/ngsid.svg
+	for n in 32 48 64 128 256 512; do \
+		install -Dm644 packaging/icons/ngsid-$$n.png $(DESTDIR)$(PREFIX)/share/icons/hicolor/$${n}x$${n}/apps/ngsid.png; \
+	done
 
 # self-tests (no SDL2 needed)
 ngsid_test: tests/test_synth.c ngsid.c ngsid.h
@@ -28,16 +33,20 @@ c64_test: tests/test_c64.c c64.c c64.h cpu6510.c cpu6510.h ngsid.c ngsid.h
 psid_test: tests/test_psid.c psid.c psid.h c64.c c64.h cpu6510.c cpu6510.h ngsid.c ngsid.h
 	$(CC) $(CFLAGS) -o $@ tests/test_psid.c psid.c c64.c cpu6510.c ngsid.c $(LDLIBS)
 
-check: ngsid_test c64_test psid_test
+hvsc_test: tests/test_hvsc.c gui/hvsc.c gui/hvsc.h
+	$(CC) $(CFLAGS) -o $@ tests/test_hvsc.c gui/hvsc.c
+
+check: ngsid_test c64_test psid_test hvsc_test
 	./ngsid_test
 	./c64_test
 	./psid_test
+	./hvsc_test
 
 # DORMANN=/path/to/6502_functional_test.bin make check-cpu
 check-cpu: cpu_test
 	./cpu_test $(DORMANN)
 
 clean:
-	rm -f ngSid ngsid_test cpu_test c64_test psid_test
+	rm -f ngSid ngsid_test cpu_test c64_test psid_test hvsc_test
 
 .PHONY: all install check check-cpu clean

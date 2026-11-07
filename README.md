@@ -35,6 +35,9 @@ endorsed it. If you are Oliver and have concerns, please open an issue.
   Martin Galway's tunes, including per-sample volume modulation of the voices as on the real chip.
 - **Smart limiter**: switches itself on only for tunes with digi, so synthetic drum tunes do not pump
   (`--limiter` / `--no-limiter` to force).
+- **Online HVSC browser**: browse the High Voltage SID Collection by folder (musicians, games, demos) straight from a
+  public mirror and play tunes without downloading the collection. Only the tunes you play are cached in
+  `~/.cache/ngsid`. Needs the `curl` program; set `NGSID_HVSC_MIRROR` to use another mirror.
 - **OpenGL GUI**: playlist, drag and drop, per-voice cards with note, frequency, scope and
   envelope, a separate digi channel display, filter strip, spectrum and VU meters, fullscreen.
 - Sample-accurate SID register timing, adjustable output rate up to 400 kHz internal.
@@ -53,7 +56,7 @@ Requirements: a C99 compiler, `make`, SDL2 (development files) and `pkg-config`.
     ./ngSid tune.sid          # or a folder, or drag and drop files onto the window
     ./ngSid -s 2 tune.sid     # start with song 2
 
-Keys: `Space` pause, `Left/Right` song, `Up/Down` file, `1`-`3` mute voices, `4` mute digi, `+`/`-` volume,
+Keys: `B` HVSC online browser (`Up/Down` select, `Enter` open/play, `Backspace` folder up), `Space` pause, `Left/Right` song, `Up/Down` file, `1`-`3` mute voices, `4` mute digi, `+`/`-` volume,
 `[` / `]` digi gain, `R` restart, `F` / `F11` fullscreen, `Esc` quit. Mouse: click a voice card to mute it,
 click the playlist, drag the volume bar.
 

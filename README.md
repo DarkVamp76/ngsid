@@ -30,45 +30,42 @@ endorsed it. If you are Oliver and have concerns, please open an issue.
   Martin Galway's tunes, including per-sample volume modulation of the voices as on the real chip.
 - **Smart limiter**: switches itself on only for tunes with digi, so synthetic drum tunes do not pump
   (`--limiter` / `--no-limiter` to force).
-- **OpenGL GUI** (`sid_gui`): playlist, drag and drop, per-voice cards with note, frequency, scope and
+- **OpenGL GUI**: playlist, drag and drop, per-voice cards with note, frequency, scope and
   envelope, a separate digi channel display, filter strip, spectrum and VU meters, fullscreen.
-- **Command-line tools**: `sid_play` (real-time playback through PipeWire / ALSA / PulseAudio) and
-  `sid_wav` (render to WAV).
 - Sample-accurate SID register timing, adjustable output rate up to 400 kHz internal.
 - Unit tests for the CPU, the C64 environment, PSID handling and the synthesizer.
 
 ## Build
 
-Requirements: a C99 compiler and `make`. The GUI additionally needs SDL2 (development files) and `pkg-config`.
+Requirements: a C99 compiler, `make`, SDL2 (development files) and `pkg-config`.
 
-    make                 # sid_play, sid_wav and the test programs
-    make check           # run the tests
-    make sid_gui         # the OpenGL GUI (needs SDL2)
+    make                 # builds ./ngSid
+    make check           # runs the self-tests (no SDL2 needed)
+    sudo make install    # optional, installs to /usr/local/bin (PREFIX=... to change)
 
 ## Use
 
-    ./sid_play tune.sid                 # play (auto-pipes to pw-cat / aplay / paplay)
-    ./sid_play -s 2 -t 60 tune.sid      # song 2, stop after 60 s
-    ./sid_wav -s 1 -t 30 tune.sid out.wav
-    ./sid_gui tune.sid                  # or a folder, or drag and drop onto the window
+    ./ngSid tune.sid          # or a folder, or drag and drop files onto the window
+    ./ngSid -s 2 tune.sid     # start with song 2
 
-Options (`sid_play` / `sid_wav`):
+Keys: `Space` pause, `Left/Right` song, `Up/Down` file, `1`-`3` mute voices, `4` mute digi, `+`/`-` volume,
+`[` / `]` digi gain, `R` restart, `F` / `F11` fullscreen, `Esc` quit. Mouse: click a voice card to mute it,
+click the playlist, drag the volume bar.
+
+Options:
 
 | Option | Meaning |
 |---|---|
-| `-s N`, `-t SEC` | song number, duration in seconds (0 = until stopped) |
+| `-s N` | start song |
 | `--pal`, `--ntsc` | override the clock |
-| `--mono`, `--rate N` | mono output, sample rate |
+| `--rate N` | sample rate |
 | `--exact-clock` | use the exact C64 clock instead of VacSid's slightly detuned one |
 | `--limiter`, `--no-limiter` | force the limiter on or off (default: automatic, on for digi tunes) |
 | `--no-vol-burst` | disable detection of volume-register digi bursts |
-| `--digi-gain N`, `--digi-lp HZ` | digi level in percent, optional digi low-pass |
+| `--digi-gain N` | digi level in percent |
 | `--digi-wrap` | 8-bit wrap-around of the digi sum (not recommended) |
 | `--filter-clamp` | clamp filter overflow instead of wrapping |
 | `--vbi` | force VBI timing for CIA-timed tunes |
-
-GUI keys: `Space` pause, `Left/Right` song, `Up/Down` file, `1`-`3` mute voices, `4` mute digi, `+`/`-` volume,
-`[` / `]` digi gain, `R` restart, `F` / `F11` fullscreen, `Esc` quit.
 
 SID files are not included. The best source is the High Voltage SID Collection (<https://hvsc.de>).
 

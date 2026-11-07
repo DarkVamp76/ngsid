@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* sid_gui - OpenGL 3.3 front end for the ngsid SID player.
+/* ngSid - OpenGL 3.3 SID player (NextGenSid).
  *
- *   sid_gui [options] file.sid|directory ...
+ *   ngSid [options] file.sid|directory ...
  *
  * Window, input and audio come from SDL2; everything on screen is drawn through one small
  * batched OpenGL renderer (rounded rectangles as signed distance fields, soft glow lines,
@@ -12,12 +12,13 @@
  *       R restart, F or F11 fullscreen, Esc quit. Mouse: click a voice card to mute it,
  *       click the playlist, drag the volume bar. Drop .sid files or folders onto the window.
  *
- * Options: --pal | --ntsc, --rate N, --exact-clock, --no-limiter, --digi-wrap, -s song,
+ * Options: --pal | --ntsc, --rate N, --exact-clock, --limiter | --no-limiter, --digi-wrap,
+ *          --filter-clamp, --no-vol-burst, --digi-gain N, --vbi, -s song,
  *          --screenshot out.bmp [--frames N]   (render N frames, save, quit; for testing)
  */
 #define _DEFAULT_SOURCE
 #include "../psid.h"
-#include "../gui/font_data.h"
+#include "font_data.h"
 
 #include <SDL2/SDL.h>
 
@@ -1111,8 +1112,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) shot_frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
-            printf("usage: %s [--pal|--ntsc] [--rate N] [--exact-clock] [--no-limiter] [--digi-wrap] [-s song] "
-                   "[--screenshot out.bmp [--frames N]] file.sid|dir ...\n", argv[0]);
+            printf("usage: %s [--pal|--ntsc] [--rate N] [--exact-clock] [--limiter|--no-limiter] [--digi-wrap]\n"
+                   "       [--filter-clamp] [--no-vol-burst] [--digi-gain N] [--vbi] [-s song]\n"
+                   "       [--screenshot out.bmp [--frames N]] file.sid|dir ...\n", argv[0]);
             return 0;
         } else if (argv[i][0] == '-' && argv[i][1]) { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
         else add_path(argv[i], 0);
@@ -1123,7 +1125,7 @@ int main(int argc, char **argv) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
-    SDL_Window *win = SDL_CreateWindow("ngsid", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 860,
+    SDL_Window *win = SDL_CreateWindow("ngSid", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 860,
                                        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (!win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
     SDL_SetWindowMinimumSize(win, 900, 600);

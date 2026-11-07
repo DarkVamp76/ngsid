@@ -1,0 +1,1289 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* sid_gui - OpenGL 3.3 front end for the ngsid SID player.
+ *
+ *   sid_gui [options] file.sid|directory ...
+ *
+ * Window, input and audio come from SDL2; everything on screen is drawn through one small
+ * batched OpenGL renderer (rounded rectangles as signed distance fields, soft glow lines,
+ * a baked DejaVu Sans atlas). OpenGL is loaded at run time via SDL_GL_GetProcAddress, so
+ * only libSDL2 is needed at link time.
+ *
+ * Keys: Space pause, Left/Right song, Up/Down file, 1-3 mute voice, 4 mute digi, +/- volume, [ ] digi gain,
+ *       R restart, F or F11 fullscreen, Esc quit. Mouse: click a voice card to mute it,
+ *       click the playlist, drag the volume bar. Drop .sid files or folders onto the window.
+ *
+ * Options: --pal | --ntsc, --rate N, --exact-clock, --no-limiter, --digi-wrap, -s song,
+ *          --screenshot out.bmp [--frames N]   (render N frames, save, quit; for testing)
+ */
+#define _DEFAULT_SOURCE
+#include "../psid.h"
+#include "../gui/font_data.h"
+
+#include <SDL2/SDL.h>
+
+#include <dirent.h>
+#include <errno.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
+
+/* ================================================================== OpenGL loader */
+
+typedef unsigned int GLuint;
+typedef int GLint;
+typedef int GLsizei;
+typedef unsigned int GLenum;
+typedef float GLfloat;
+typedef char GLchar;
+typedef long GLsizeiptr;
+typedef long GLintptr;
+
+#define GL_COLOR_BUFFER_BIT 0x4000
+#define GL_BLEND 0x0BE2
+#define GL_SRC_ALPHA 0x0302
+#define GL_ONE_MINUS_SRC_ALPHA 0x0303
+#define GL_ONE 1
+#define GL_TEXTURE_2D 0x0DE1
+#define GL_TEXTURE_MIN_FILTER 0x2801
+#define GL_TEXTURE_MAG_FILTER 0x2800
+#define GL_TEXTURE_WRAP_S 0x2802
+#define GL_TEXTURE_WRAP_T 0x2803
+#define GL_LINEAR 0x2601
+#define GL_LINEAR_MIPMAP_LINEAR 0x2703
+#define GL_CLAMP_TO_EDGE 0x812F
+#define GL_RED 0x1903
+#define GL_R8 0x8229
+#define GL_RGBA 0x1908
+#define GL_UNSIGNED_BYTE 0x1401
+#define GL_FLOAT 0x1406
+#define GL_TRIANGLES 4
+#define GL_ARRAY_BUFFER 0x8892
+#define GL_DYNAMIC_DRAW 0x88E8
+#define GL_VERTEX_SHADER 0x8B31
+#define GL_FRAGMENT_SHADER 0x8B30
+#define GL_COMPILE_STATUS 0x8B81
+#define GL_LINK_STATUS 0x8B82
+#define GL_UNPACK_ALIGNMENT 0x0CF5
+#define GL_PACK_ALIGNMENT 0x0D05
+
+#define GLFUNCS(X) \
+    X(void, glClearColor, (GLfloat, GLfloat, GLfloat, GLfloat)) \
+    X(void, glClear, (GLuint)) \
+    X(void, glViewport, (GLint, GLint, GLsizei, GLsizei)) \
+    X(void, glEnable, (GLenum)) \
+    X(void, glBlendFunc, (GLenum, GLenum)) \
+    X(void, glGenTextures, (GLsizei, GLuint *)) \
+    X(void, glBindTexture, (GLenum, GLuint)) \
+    X(void, glTexImage2D, (GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *)) \
+    X(void, glTexParameteri, (GLenum, GLenum, GLint)) \
+    X(void, glPixelStorei, (GLenum, GLint)) \
+    X(void, glDrawArrays, (GLenum, GLint, GLsizei)) \
+    X(void, glReadPixels, (GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *)) \
+    X(GLuint, glCreateShader, (GLenum)) \
+    X(void, glShaderSource, (GLuint, GLsizei, const GLchar *const *, const GLint *)) \
+    X(void, glCompileShader, (GLuint)) \
+    X(void, glGetShaderiv, (GLuint, GLenum, GLint *)) \
+    X(void, glGetShaderInfoLog, (GLuint, GLsizei, GLsizei *, GLchar *)) \
+    X(GLuint, glCreateProgram, (void)) \
+    X(void, glAttachShader, (GLuint, GLuint)) \
+    X(void, glLinkProgram, (GLuint)) \
+    X(void, glGetProgramiv, (GLuint, GLenum, GLint *)) \
+    X(void, glGetProgramInfoLog, (GLuint, GLsizei, GLsizei *, GLchar *)) \
+    X(void, glUseProgram, (GLuint)) \
+    X(void, glDeleteShader, (GLuint)) \
+    X(GLint, glGetUniformLocation, (GLuint, const GLchar *)) \
+    X(void, glUniform1i, (GLint, GLint)) \
+    X(void, glUniform1f, (GLint, GLfloat)) \
+    X(void, glUniform2f, (GLint, GLfloat, GLfloat)) \
+    X(void, glGenVertexArrays, (GLsizei, GLuint *)) \
+    X(void, glBindVertexArray, (GLuint)) \
+    X(void, glGenBuffers, (GLsizei, GLuint *)) \
+    X(void, glBindBuffer, (GLenum, GLuint)) \
+    X(void, glBufferData, (GLenum, GLsizeiptr, const void *, GLenum)) \
+    X(void, glBufferSubData, (GLenum, GLintptr, GLsizeiptr, const void *)) \
+    X(void, glEnableVertexAttribArray, (GLuint)) \
+    X(void, glVertexAttribPointer, (GLuint, GLint, GLenum, unsigned char, GLsizei, const void *)) \
+    X(void, glGenerateMipmap, (GLenum))
+
+#define X(ret, name, args) static ret(*name) args;
+GLFUNCS(X)
+#undef X
+
+static int gl_load(void) {
+#define X(ret, name, args) \
+    name = (ret(*) args)SDL_GL_GetProcAddress(#name); \
+    if (!name) { fprintf(stderr, "missing OpenGL function %s\n", #name); return -1; }
+    GLFUNCS(X)
+#undef X
+    return 0;
+}
+
+/* ================================================================== batched 2D renderer */
+
+typedef struct { float r, g, b, a; } col;
+typedef struct { float x, y, u, v, r, g, b, a, m, p1, p2, p3; } vtx;
+
+#define MAXV 200000
+static vtx *vb;
+static int nv;
+static int add_blend;
+static GLuint prog, vao, vbo, fonttex;
+static GLint u_res, u_pxs, u_tex;
+static float view_w, view_h, view_scale = 1;
+static int glyph_idx[256];
+
+static const char *VS =
+    "#version 330 core\n"
+    "layout(location=0) in vec2 pos; layout(location=1) in vec2 uv; layout(location=2) in vec4 col;"
+    "layout(location=3) in vec4 par;\n"
+    "uniform vec2 res; out vec2 vuv; out vec4 vcol; out vec4 vpar;\n"
+    "void main(){ vuv=uv; vcol=col; vpar=par;"
+    " gl_Position=vec4(pos.x/res.x*2.0-1.0, 1.0-pos.y/res.y*2.0, 0.0, 1.0); }\n";
+
+static const char *FS =
+    "#version 330 core\n"
+    "in vec2 vuv; in vec4 vcol; in vec4 vpar; out vec4 o;\n"
+    "uniform sampler2D tex; uniform float pxs;\n"
+    "float sdbox(vec2 p, vec2 h, float r){ vec2 q=abs(p)-h+vec2(r); return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }\n"
+    "void main(){\n"
+    " int m=int(vpar.x+0.5);\n"
+    " if(m==0){ o=vcol; }\n"
+    " else if(m==1){ float a=texture(tex,vuv).r; o=vec4(vcol.rgb,vcol.a*a); }\n"
+    " else if(m==2){ float d=sdbox(vuv,vpar.yz,vpar.w); o=vec4(vcol.rgb,vcol.a*clamp(0.5-d*pxs,0.0,1.0)); }\n"
+    " else if(m==3){ float t=abs(vuv.y); o=vec4(vcol.rgb,vcol.a*exp(-t*t*vpar.y)); }\n"
+    " else if(m==5){ float d=sdbox(vuv,vpar.yz,vpar.w); float a=clamp(1.0-d/vpar.w,0.0,1.0); o=vec4(vcol.rgb,vcol.a*a*a); }\n"
+    " else { o=vec4(vcol.rgb,vcol.a*exp(-dot(vuv,vuv)/(2.0*vpar.y*vpar.y))); }\n"
+    "}\n";
+
+static void flush(void) {
+    if (!nv) return;
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)((size_t)nv * sizeof(vtx)), vb);
+    glDrawArrays(GL_TRIANGLES, 0, nv);
+    nv = 0;
+}
+
+static void set_additive(int on) {
+    if (on == add_blend) return;
+    flush();
+    add_blend = on;
+    glBlendFunc(GL_SRC_ALPHA, on ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+}
+
+static void V(float x, float y, float u, float v, col c, float m, float p1, float p2, float p3) {
+    if (nv >= MAXV) flush();
+    vtx *t = &vb[nv++];
+    t->x = x; t->y = y; t->u = u; t->v = v;
+    t->r = c.r; t->g = c.g; t->b = c.b; t->a = c.a;
+    t->m = m; t->p1 = p1; t->p2 = p2; t->p3 = p3;
+}
+
+static col C(float r, float g, float b, float a) { col c = { r, g, b, a }; return c; }
+static col alpha(col c, float a) { c.a *= a; return c; }
+static col mix(col a, col b, float t) {
+    return C(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t);
+}
+
+static void rect_grad(float x, float y, float w, float h, col top, col bot) {
+    V(x, y, 0, 0, top, 0, 0, 0, 0); V(x + w, y, 0, 0, top, 0, 0, 0, 0); V(x, y + h, 0, 0, bot, 0, 0, 0, 0);
+    V(x + w, y, 0, 0, top, 0, 0, 0, 0); V(x + w, y + h, 0, 0, bot, 0, 0, 0, 0); V(x, y + h, 0, 0, bot, 0, 0, 0, 0);
+}
+static void rect(float x, float y, float w, float h, col c) { rect_grad(x, y, w, h, c, c); }
+
+/* quad with SDF-local coordinates: uv is the offset from the centre */
+static void sdf_quad(float x, float y, float w, float h, float pad, col c, float mode, float p1, float p2, float p3) {
+    float hx = w / 2 + pad, hy = h / 2 + pad, cx = x + w / 2, cy = y + h / 2;
+    V(cx - hx, cy - hy, -hx, -hy, c, mode, p1, p2, p3); V(cx + hx, cy - hy, hx, -hy, c, mode, p1, p2, p3);
+    V(cx - hx, cy + hy, -hx, hy, c, mode, p1, p2, p3);  V(cx + hx, cy - hy, hx, -hy, c, mode, p1, p2, p3);
+    V(cx + hx, cy + hy, hx, hy, c, mode, p1, p2, p3);   V(cx - hx, cy + hy, -hx, hy, c, mode, p1, p2, p3);
+}
+static void rrect(float x, float y, float w, float h, float r, col c) { sdf_quad(x, y, w, h, 1.0f, c, 2, w / 2, h / 2, r); }
+static void shadow(float x, float y, float w, float h, float r, float soft, col c) {
+    sdf_quad(x, y, w, h, soft, c, 5, w / 2, h / 2, soft + r * 0); (void)r;
+}
+static void blob(float cx, float cy, float sigma, col c) {
+    float e = sigma * 3.2f;
+    sdf_quad(cx - e, cy - e, e * 2, e * 2, 0, c, 6, sigma, 0, 0);
+}
+static void tri(float x0, float y0, float x1, float y1, float x2, float y2, col c) {
+    V(x0, y0, 0, 0, c, 0, 0, 0, 0); V(x1, y1, 0, 0, c, 0, 0, 0, 0); V(x2, y2, 0, 0, c, 0, 0, 0, 0);
+}
+
+/* soft anti-aliased polyline, xy = n points; w half width in px, k = falloff */
+static void polyline(const float *xy, int n, float w, float k, col c) {
+    if (n < 2) return;
+    float px[2] = { 0, 0 };
+    float nx[1100], ny[1100];
+    if (n > 1100) n = 1100;
+    for (int i = 0; i < n; i++) {
+        float dx0 = 0, dy0 = 0, dx1 = 0, dy1 = 0;
+        if (i > 0) { dx0 = xy[2 * i] - xy[2 * i - 2]; dy0 = xy[2 * i + 1] - xy[2 * i - 1]; }
+        if (i < n - 1) { dx1 = xy[2 * i + 2] - xy[2 * i]; dy1 = xy[2 * i + 3] - xy[2 * i + 1]; }
+        float l0 = sqrtf(dx0 * dx0 + dy0 * dy0), l1 = sqrtf(dx1 * dx1 + dy1 * dy1);
+        float ax = l0 > 1e-6f ? -dy0 / l0 : 0, ay = l0 > 1e-6f ? dx0 / l0 : 0;
+        float bx = l1 > 1e-6f ? -dy1 / l1 : 0, by = l1 > 1e-6f ? dx1 / l1 : 0;
+        float sx = ax + bx, sy = ay + by, sl = sqrtf(sx * sx + sy * sy);
+        if (sl < 1e-4f) { sx = ax + bx; sy = ay + by; if (l1 > 0) { sx = bx; sy = by; } else { sx = ax; sy = ay; } sl = 1; }
+        sx /= sl; sy /= sl;
+        float d = sx * (l0 > 0 ? ax : bx) + sy * (l0 > 0 ? ay : by);   /* miter length compensation */
+        float m = d > 0.5f ? 1.0f / d : 2.0f;
+        nx[i] = sx * m; ny[i] = sy * m;
+    }
+    (void)px;
+    for (int i = 0; i < n - 1; i++) {
+        float x0 = xy[2 * i], y0 = xy[2 * i + 1], x1 = xy[2 * i + 2], y1 = xy[2 * i + 3];
+        float a0x = x0 + nx[i] * w, a0y = y0 + ny[i] * w, a1x = x0 - nx[i] * w, a1y = y0 - ny[i] * w;
+        float b0x = x1 + nx[i + 1] * w, b0y = y1 + ny[i + 1] * w, b1x = x1 - nx[i + 1] * w, b1y = y1 - ny[i + 1] * w;
+        V(a0x, a0y, 0, 1, c, 3, k, 0, 0); V(a1x, a1y, 0, -1, c, 3, k, 0, 0); V(b0x, b0y, 0, 1, c, 3, k, 0, 0);
+        V(a1x, a1y, 0, -1, c, 3, k, 0, 0); V(b1x, b1y, 0, -1, c, 3, k, 0, 0); V(b0x, b0y, 0, 1, c, 3, k, 0, 0);
+    }
+}
+
+/* ---- text (Latin-1 codes) */
+static float text_width(const char *s, float size) {
+    float w = 0, sc = size / FONT_PX;
+    for (; *s; s++) {
+        int gi = glyph_idx[(unsigned char)*s];
+        if (gi >= 0) w += font_glyphs[gi].adv * sc;
+    }
+    return w;
+}
+
+static float text(float x, float y, float size, col c, const char *s) {
+    float sc = size / FONT_PX, x0 = x;
+    for (; *s; s++) {
+        int gi = glyph_idx[(unsigned char)*s];
+        if (gi < 0) continue;
+        const font_glyph *g = &font_glyphs[gi];
+        if (g->w && g->h) {
+            float gx = x + g->xoff * sc, gy = y + g->yoff * sc, gw = g->w * sc, gh = g->h * sc;
+            float u0 = (float)g->x / FONT_ATLAS_W, v0 = (float)g->y / FONT_ATLAS_H;
+            float u1 = (float)(g->x + g->w) / FONT_ATLAS_W, v1 = (float)(g->y + g->h) / FONT_ATLAS_H;
+            V(gx, gy, u0, v0, c, 1, 0, 0, 0); V(gx + gw, gy, u1, v0, c, 1, 0, 0, 0); V(gx, gy + gh, u0, v1, c, 1, 0, 0, 0);
+            V(gx + gw, gy, u1, v0, c, 1, 0, 0, 0); V(gx + gw, gy + gh, u1, v1, c, 1, 0, 0, 0); V(gx, gy + gh, u0, v1, c, 1, 0, 0, 0);
+        }
+        x += g->adv * sc;
+    }
+    return x - x0;
+}
+
+static float text_right(float xr, float y, float size, col c, const char *s) {
+    float w = text_width(s, size);
+    text(xr - w, y, size, c, s);
+    return w;
+}
+
+/* UTF-8 -> Latin-1 where possible (file names) */
+static void utf8_to_latin1(const char *in, char *out, size_t cap) {
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)in; *p && o + 1 < cap; p++) {
+        if (*p < 0x80) out[o++] = (char)*p;
+        else if ((*p == 0xC2 || *p == 0xC3) && (p[1] & 0xC0) == 0x80) { out[o++] = (char)(((*p & 3) << 6) | (p[1] & 0x3F)); p++; }
+        else if (*p >= 0xC0) { out[o++] = '?'; while ((p[1] & 0xC0) == 0x80) p++; }
+    }
+    out[o] = 0;
+}
+
+static void fit_text(char *s, float maxw, float size) {
+    if (text_width(s, size) <= maxw) return;
+    size_t n = strlen(s);
+    while (n > 1) {
+        s[--n] = 0;
+        char tmp[300];
+        snprintf(tmp, sizeof tmp, "%s...", s);
+        if (text_width(tmp, size) <= maxw) { strcpy(s, tmp); return; }
+    }
+}
+
+/* ================================================================== palette */
+
+static const col BG0 = { 0.035f, 0.043f, 0.078f, 1 };
+static const col BG1 = { 0.070f, 0.090f, 0.150f, 1 };
+static const col CARD = { 0.082f, 0.102f, 0.168f, 1 };
+static const col CARDHI = { 0.105f, 0.130f, 0.208f, 1 };
+static const col EDGE = { 0.22f, 0.27f, 0.42f, 1 };
+static const col TXT = { 0.92f, 0.94f, 1.0f, 1 };
+static const col DIM = { 0.52f, 0.58f, 0.74f, 1 };
+static const col FAINT = { 0.30f, 0.35f, 0.50f, 1 };
+static const col VC[3] = { { 0.24f, 0.88f, 1.0f, 1 }, { 1.0f, 0.36f, 0.80f, 1 }, { 1.0f, 0.76f, 0.28f, 1 } };
+static const col OKC = { 0.35f, 0.95f, 0.55f, 1 };
+static const col WARN = { 1.0f, 0.45f, 0.35f, 1 };
+
+/* ================================================================== tune + audio */
+
+typedef struct {
+    uint8_t *buf;
+    psid_info info;
+    ngsid *s;
+    c64 *m;
+    psid_player *p;
+    int song, pal;
+} tune_t;
+
+typedef struct {
+    uint8_t wave[3][NGSID_BLOCK];
+    ngsid_voice_info vi[3];
+    uint8_t digi[NGSID_BLOCK];
+    uint8_t reg[0x20];
+    float ring[2048];          /* mono, newest sample last */
+    float peak[2];             /* max |sample| per channel since the UI last looked */
+    uint64_t frames;
+    int running;
+} vis_t;
+
+static ngsid_config g_cfg;
+static int g_rate = 44100;
+static int g_pal_override = -1;
+static int g_no_burst;
+static unsigned g_mute;
+static float g_vol = 0.8f;
+static int g_paused;
+static tune_t *g_tune;      /* swapped under SDL_LockAudioDevice */
+static vis_t g_vis;
+static SDL_AudioDeviceID g_dev;
+static char g_error[160];
+
+static void audio_cb(void *ud, Uint8 *stream, int len) {
+    (void)ud;
+    static int16_t stage[NGSID_BLOCK * 2];
+    static int pos = NGSID_BLOCK, have = NGSID_BLOCK;
+    static double dc[2] = { 128, 128 };
+    int16_t *out = (int16_t *)stream;
+    int frames = len / 4;
+    while (frames > 0) {
+        tune_t *t = g_tune;
+        if (!t || !t->p || g_paused || psid_player_error(t->p)) {
+            memset(out, 0, (size_t)frames * 4);
+            g_vis.running = 0;
+            return;
+        }
+        if (pos >= have) {
+            uint8_t raw[NGSID_BLOCK * 2];
+            size_t n = ngsid_render(t->s, raw, NGSID_BLOCK);
+            have = (int)n;
+            pos = 0;
+            float gain = 128.0f * g_vol * 1.25f;
+            float pk[2] = { 0, 0 };
+            for (int i = 0; i < have; i++) {
+                for (int c = 0; c < 2; c++) {
+                    double x = raw[i * 2 + c];
+                    dc[c] += (x - dc[c]) * 0.0005;
+                    float f = (float)((x - dc[c]) * 128.0) / 32768.0f;
+                    float a = fabsf(f);
+                    if (a > pk[c]) pk[c] = a;
+                    int v = (int)((x - dc[c]) * gain);
+                    if (v > 32767) v = 32767;
+                    if (v < -32768) v = -32768;
+                    stage[i * 2 + c] = (int16_t)v;
+                }
+            }
+            /* shift ring and append */
+            memmove(g_vis.ring, g_vis.ring + have, (size_t)(2048 - have) * sizeof(float));
+            for (int i = 0; i < have; i++) g_vis.ring[2048 - have + i] = ((float)(stage[i * 2] + stage[i * 2 + 1]) / 65536.0f) / (g_vol * 1.25f > 0.01f ? g_vol * 1.25f : 0.01f);
+            for (int c = 0; c < 2; c++) if (pk[c] > g_vis.peak[c]) g_vis.peak[c] = pk[c];
+            for (int v = 0; v < 3; v++) {
+                memcpy(g_vis.wave[v], ngsid_voice_wave(t->s, v), NGSID_BLOCK);
+                ngsid_get_voice_info(t->s, v, &g_vis.vi[v]);
+            }
+            memcpy(g_vis.digi, ngsid_digi_wave(t->s), NGSID_BLOCK);
+            for (unsigned r = 0; r < 0x20; r++) g_vis.reg[r] = ngsid_shadow_reg(t->s, r);
+            g_vis.frames += (uint64_t)have;
+            g_vis.running = 1;
+            if (!have) { memset(out, 0, (size_t)frames * 4); return; }
+        }
+        int n = have - pos < frames ? have - pos : frames;
+        memcpy(out, stage + pos * 2, (size_t)n * 4);
+        out += n * 2; pos += n; frames -= n;
+    }
+}
+
+static void tune_free(tune_t *t) {
+    if (!t) return;
+    if (t->p) psid_player_destroy(t->p);
+    if (t->m) c64_destroy(t->m);
+    if (t->s) ngsid_destroy(t->s);
+    free(t->buf);
+    free(t);
+}
+
+/* Parse + create a player outside the audio lock, swap it in under the lock. */
+static int tune_load(const char *path, int song, tune_t **out_info) {
+    g_error[0] = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) { snprintf(g_error, sizeof g_error, "%s", strerror(errno)); return -1; }
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    tune_t *t = (tune_t *)calloc(1, sizeof *t);
+    t->buf = (uint8_t *)malloc(len > 0 ? (size_t)len : 1);
+    if (!t->buf || fread(t->buf, 1, (size_t)len, f) != (size_t)len) { fclose(f); snprintf(g_error, sizeof g_error, "read error"); tune_free(t); return -1; }
+    fclose(f);
+    int rc = psid_parse(t->buf, (size_t)len, &t->info);
+    if (rc) { snprintf(g_error, sizeof g_error, "%s", psid_strerror(rc)); tune_free(t); return -1; }
+    if (song < 1 || song > t->info.songs) song = t->info.start_song;
+    t->song = song;
+    t->pal = g_pal_override >= 0 ? g_pal_override : (t->info.clock == 2 ? 0 : 1);
+    ngsid_config cfg = g_cfg;
+    cfg.pal = t->pal; cfg.stereo = 1; cfg.sample_rate = g_rate;
+    t->s = ngsid_create(&cfg);
+    t->m = c64_create(t->s, t->pal);
+    if (t->m) t->m->no_vol_burst = g_no_burst;
+    if (!t->s || !t->m) { snprintf(g_error, sizeof g_error, "out of memory"); tune_free(t); return -1; }
+    ngsid_set_voice_mute(t->s, g_mute);
+    t->p = psid_player_create(t->m, t->s, &t->info, song, g_rate, &rc);
+    if (!t->p) {
+        snprintf(g_error, sizeof g_error, "init: %s", psid_strerror(rc));
+        /* keep the header data for display, but nothing to play */
+    }
+    if (g_dev) SDL_LockAudioDevice(g_dev);
+    tune_t *old = g_tune;
+    g_tune = t;
+    memset(&g_vis, 0, sizeof g_vis);
+    if (g_dev) SDL_UnlockAudioDevice(g_dev);
+    tune_free(old);
+    (void)out_info;
+    return t->p ? 0 : -1;
+}
+
+/* ================================================================== playlist */
+
+typedef struct { char *path; char label[128]; } entry;
+static entry *pl;
+static int npl, cur = -1, cur_song = 1;
+static float list_scroll;
+static int list_follow = 1;
+
+static int is_sid_name(const char *n) {
+    size_t l = strlen(n);
+    return l > 4 && !strcasecmp(n + l - 4, ".sid");
+}
+
+static void add_file(const char *path) {
+    pl = (entry *)realloc(pl, (size_t)(npl + 1) * sizeof *pl);
+    pl[npl].path = strdup(path);
+    const char *b = strrchr(path, '/');
+    b = b ? b + 1 : path;
+    char tmp[200];
+    utf8_to_latin1(b, tmp, sizeof tmp);
+    size_t l = strlen(tmp);
+    if (l > 4 && !strcasecmp(tmp + l - 4, ".sid")) tmp[l - 4] = 0;
+    for (char *q = tmp; *q; q++) if (*q == '_') *q = ' ';
+    snprintf(pl[npl].label, sizeof pl[npl].label, "%s", tmp);
+    npl++;
+}
+
+static int cmp_entry(const void *a, const void *b) { return strcasecmp(((const entry *)a)->path, ((const entry *)b)->path); }
+
+static void add_path(const char *path, int depth) {
+    struct stat st;
+    if (stat(path, &st)) return;
+    if (S_ISDIR(st.st_mode)) {
+        if (depth > 3) return;
+        DIR *d = opendir(path);
+        if (!d) return;
+        struct dirent *e;
+        int first = npl;
+        while ((e = readdir(d))) {
+            if (e->d_name[0] == '.') continue;
+            char full[1024];
+            snprintf(full, sizeof full, "%s/%s", path, e->d_name);
+            add_path(full, depth + 1);
+        }
+        closedir(d);
+        qsort(pl + first, (size_t)(npl - first), sizeof *pl, cmp_entry);
+    } else if (is_sid_name(path))
+        add_file(path);
+}
+
+static void play_index(int idx, int song) {
+    if (idx < 0 || idx >= npl) return;
+    cur = idx;
+    list_follow = 1;
+    tune_load(pl[idx].path, song, NULL);
+    cur_song = g_tune ? g_tune->song : 1;
+}
+
+static void change_song(int delta) {
+    if (!g_tune || g_tune->info.songs < 1) return;
+    int n = g_tune->info.songs;
+    int s = ((cur_song - 1 + delta) % n + n) % n + 1;
+    play_index(cur, s);
+}
+
+static void change_file(int delta) {
+    if (!npl) return;
+    play_index(((cur + delta) % npl + npl) % npl, 0);
+}
+
+/* ================================================================== analysis helpers */
+
+static void fft(double *re, double *im, int n) {
+    for (int i = 1, j = 0; i < n; i++) {
+        int bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) { double t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+    }
+    for (int len = 2; len <= n; len <<= 1) {
+        double ang = -2 * M_PI / len, wr = cos(ang), wi = sin(ang);
+        for (int i = 0; i < n; i += len) {
+            double cr = 1, ci = 0;
+            for (int k = 0; k < len / 2; k++) {
+                int a = i + k, b = i + k + len / 2;
+                double xr = re[b] * cr - im[b] * ci, xi = re[b] * ci + im[b] * cr;
+                re[b] = re[a] - xr; im[b] = im[a] - xi;
+                re[a] += xr; im[a] += xi;
+                double t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+            }
+        }
+    }
+}
+
+#define NBANDS 64
+static float band[NBANDS], bandpk[NBANDS], bandhold[NBANDS];
+static float vu[2], vupk[2], vuhold[2];
+static float scope_amp[3] = { 60, 60, 60 };
+static float glow[3];
+
+static void analyse(const vis_t *v, float dt) {
+    static double re[2048], im[2048], win[2048];
+    static int init;
+    if (!init) { for (int i = 0; i < 2048; i++) win[i] = 0.5 - 0.5 * cos(2 * M_PI * i / 2047.0); init = 1; }
+    for (int i = 0; i < 2048; i++) { re[i] = v->ring[i] * win[i]; im[i] = 0; }
+    fft(re, im, 2048);
+    float mag[1025];
+    for (int i = 0; i <= 1024; i++) mag[i] = (float)(sqrt(re[i % 2048] * re[i % 2048] + im[i % 2048] * im[i % 2048]) / (2048.0 / 4.0));
+    double fmin = 40.0, fmax = 17000.0, binhz = (double)g_rate / 2048.0;
+    for (int b = 0; b < NBANDS; b++) {
+        double f0 = fmin * pow(fmax / fmin, (double)b / NBANDS), f1 = fmin * pow(fmax / fmin, (double)(b + 1) / NBANDS);
+        double b0 = f0 / binhz, b1 = f1 / binhz;
+        float m = 0;
+        if (b1 - b0 < 1.0) {
+            double c = (b0 + b1) / 2;
+            int i0 = (int)c;
+            double fr = c - i0;
+            m = (float)(mag[i0] * (1 - fr) + mag[i0 + 1] * fr);
+        } else {
+            for (int i = (int)ceil(b0); i <= (int)b1 && i <= 1024; i++) if (mag[i] > m) m = mag[i];
+        }
+        float db = 20.0f * log10f(m + 1e-7f);
+        float val = (db + 66.0f) / 66.0f + (float)b / NBANDS * 0.10f;   /* slight tilt to compensate the 1/f slope */
+        if (val < 0) val = 0;
+        if (val > 1) val = 1;
+        if (val > band[b]) band[b] += (val - band[b]) * 0.65f;
+        else { band[b] -= dt * 1.3f; if (band[b] < val) band[b] = val; }
+        if (band[b] >= bandpk[b]) { bandpk[b] = band[b]; bandhold[b] = 0.45f; }
+        else if (bandhold[b] > 0) bandhold[b] -= dt;
+        else { bandpk[b] -= dt * 0.55f; if (bandpk[b] < band[b]) bandpk[b] = band[b]; }
+    }
+    for (int c = 0; c < 2; c++) {
+        float db = 20.0f * log10f(v->peak[c] + 1e-6f);
+        float val = (db + 48.0f) / 48.0f;
+        if (val < 0) val = 0;
+        if (val > 1) val = 1;
+        if (val > vu[c]) vu[c] = val; else { vu[c] -= dt * 1.6f; if (vu[c] < val) vu[c] = val; }
+        if (vu[c] >= vupk[c]) { vupk[c] = vu[c]; vuhold[c] = 0.8f; }
+        else if (vuhold[c] > 0) vuhold[c] -= dt;
+        else { vupk[c] -= dt * 0.5f; if (vupk[c] < vu[c]) vupk[c] = vu[c]; }
+    }
+}
+
+static const char *NOTE[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+
+/* ================================================================== UI */
+
+static float mx, my;
+static int click, clickx, clicky, mouse_down, vol_drag;
+static int hit(float x, float y, float w, float h) { return mx >= x && mx < x + w && my >= y && my < y + h; }
+static int clicked(float x, float y, float w, float h) { return click && clickx >= x && clickx < x + w && clicky >= y && clicky < y + h; }
+
+static float chip(float x, float y, const char *label, col c, int lit) {
+    float w = text_width(label, 12) + 14;
+    if (lit) {
+        rrect(x, y, w, 20, 6, alpha(c, 0.22f));
+        text(x + 7, y + 3, 12, c, label);
+    } else {
+        rrect(x, y, w, 20, 6, alpha(FAINT, 0.18f));
+        text(x + 7, y + 3, 12, alpha(FAINT, 0.9f), label);
+    }
+    return w + 5;
+}
+
+static void card(float x, float y, float w, float h, int hover) {
+    shadow(x, y + 6, w, h, 14, 22, C(0, 0, 0, 0.5f));
+    rrect(x, y, w, h, 14, alpha(EDGE, hover ? 0.75f : 0.45f));
+    rrect(x + 1, y + 1, w - 2, h - 2, 13, hover ? CARDHI : CARD);
+}
+
+static void mmss(char *buf, size_t cap, double sec) {
+    int s = (int)sec;
+    snprintf(buf, cap, "%d:%02d", s / 60, s % 60);
+}
+
+static void draw_voice(int v, float x, float y, float w, float h, const vis_t *vs, double t) {
+    const ngsid_voice_info *vi = &vs->vi[v];
+    col vc = VC[v];
+    int muted = (g_mute >> v) & 1;
+    int active = ((vi->ctrl & 1) || vi->level > 0) && vs->running;
+    card(x, y, w, h, hit(x, y, w, h));
+    if (glow[v] > 0.01f) {
+        set_additive(1);
+        blob(x + w / 2, y + 90, w * 0.45f, alpha(vc, 0.10f * glow[v]));
+        set_additive(0);
+    }
+    char buf[64];
+    snprintf(buf, sizeof buf, "VOICE %d", v + 1);
+    text(x + 16, y + 12, 13, alpha(DIM, 1), buf);
+    /* gate LED */
+    float lx = x + w - 26, ly = y + 21;
+    rrect(lx - 6, ly - 6, 12, 12, 6, alpha(FAINT, 0.5f));
+    if (vi->ctrl & 1 && vs->running) {
+        set_additive(1); blob(lx, ly, 10, alpha(vc, 0.55f)); set_additive(0);
+        rrect(lx - 5, ly - 5, 10, 10, 5, vc);
+    }
+    /* note + Hz */
+    double clk = g_tune && g_tune->pal ? 985248.0 : 1022727.0;
+    double hz = vi->freq * clk / 16777216.0;
+    char note[16] = "--", hzs[48] = "";
+    if (vi->freq && hz > 8) {
+        double m = 69 + 12 * log2(hz / 440.0);
+        int mi = (int)floor(m + 0.5);
+        if (mi >= 0 && mi < 128) snprintf(note, sizeof note, "%s%d", NOTE[mi % 12], mi / 12 - 1);
+        snprintf(hzs, sizeof hzs, "%.1f Hz", hz);
+        double cents = (m - mi) * 100;
+        if (fabs(cents) >= 5) {
+            char cs[24];
+            snprintf(cs, sizeof cs, "  %+.0f ct", cents);
+            strncat(hzs, cs, sizeof hzs - strlen(hzs) - 1);
+        }
+    }
+    col nc = active && !muted ? mix(TXT, vc, 0.35f) : alpha(FAINT, 1);
+    text(x + 16, y + 30, 44, nc, note);
+    text(x + 16, y + 82, 13, alpha(DIM, active ? 1.0f : 0.5f), hzs);
+    /* chips */
+    float cx = x + 16, cy = y + 106;
+    cx += chip(cx, cy, "TRI", vc, (vi->ctrl & 0x10) != 0);
+    cx += chip(cx, cy, "SAW", vc, (vi->ctrl & 0x20) != 0);
+    cx += chip(cx, cy, "PUL", vc, (vi->ctrl & 0x40) != 0);
+    cx += chip(cx, cy, "NOI", vc, (vi->ctrl & 0x80) != 0);
+    if (vi->ctrl & 0x02) cx += chip(cx, cy, "SYNC", OKC, 1);
+    if (vi->ctrl & 0x04) cx += chip(cx, cy, "RING", OKC, 1);
+    if (vi->ctrl & 0x08) cx += chip(cx, cy, "TEST", WARN, 1);
+    if (vi->ctrl & 0x40) {
+        snprintf(buf, sizeof buf, "PW %d%%", (int)(vi->pw * 100 / 4095));
+        text_right(x + w - 16, y + 82, 13, alpha(DIM, active ? 1.0f : 0.5f), buf);
+    }
+    /* scope */
+    float sx = x + 14, sy = y + 136, sw = w - 28, sh = 56;
+    rrect(sx, sy, sw, sh, 8, C(0.03f, 0.04f, 0.07f, 1));
+    rect(sx + 6, sy + sh / 2, sw - 12, 1, alpha(FAINT, 0.25f));
+    const uint8_t *wv = vs->wave[v];
+    double mean = 0;
+    for (int i = 0; i < NGSID_BLOCK; i++) mean += wv[i];
+    mean /= NGSID_BLOCK;
+    int trig = 0;
+    for (int i = 0; i < 380; i++) if (wv[i] <= mean && wv[i + 1] > mean) { trig = i; break; }
+    float pk = 0;
+    for (int i = 0; i < NGSID_BLOCK; i++) { float d = (float)fabs(wv[i] - mean); if (d > pk) pk = d; }
+    float target = pk < 20 ? 20 : pk;
+    if (target > scope_amp[v]) scope_amp[v] = target; else scope_amp[v] += (target - scope_amp[v]) * 0.08f;
+    enum { NP = 280 };
+    float pts[NP * 2];
+    for (int i = 0; i < NP; i++) {
+        float val = (float)(wv[trig + i * 2] - mean) / scope_amp[v];
+        if (muted) val = 0;
+        pts[2 * i] = sx + 6 + (sw - 12) * (float)i / (NP - 1);
+        pts[2 * i + 1] = sy + sh / 2 - val * (sh / 2 - 6);
+    }
+    col lc = muted ? alpha(FAINT, 1) : vc;
+    set_additive(1);
+    polyline(pts, NP, 5.0f, 3.5f, alpha(lc, 0.30f));
+    set_additive(0);
+    polyline(pts, NP, 1.5f, 3.0f, mix(lc, C(1, 1, 1, 1), 0.35f));
+    /* envelope */
+    float ey = y + h - 22, ew = w - 32 - 70;
+    rrect(x + 16, ey, ew, 6, 3, alpha(FAINT, 0.35f));
+    float lvl = vs->running ? vi->level / 127.0f : 0;
+    if (lvl > 0.005f) rrect(x + 16, ey, ew * lvl < 6 ? 6 : ew * lvl, 6, 3, alpha(muted ? FAINT : vc, 0.95f));
+    static const char *ST[4] = { "ATTACK", "DECAY", "HOLD", "RELEASE" };
+    const char *st = (vi->level == 0 && !(vi->ctrl & 1)) ? "OFF" : ST[vi->state & 3];
+    text_right(x + w - 16, ey - 5, 11, alpha(DIM, 0.9f), st);
+    /* mute overlay */
+    if (muted) {
+        rrect(x, y, w, h, 14, C(0.03f, 0.04f, 0.07f, 0.55f));
+        text(x + w / 2 - text_width("STUMM", 22) / 2, y + 62, 22, VC[2], "STUMM");
+    }
+    (void)t;
+}
+
+
+static float digi_dmax = 32;
+
+static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
+    col dc = C(0.30f, 0.95f, 0.62f, 1);
+    int muted = (g_mute >> 3) & 1;
+    card(x, y, w, h, hit(x, y, w, h));
+    const uint8_t *d = vs->digi;
+    int changes = 0, active = 0, last = d[0];
+    for (int i = 0; i < NGSID_BLOCK; i++) {
+        if (d[i] != last) { changes++; last = d[i]; }
+        if (d[i]) active = 1;
+    }
+    if (!vs->running) { changes = 0; active = 0; }
+    float rate = (float)changes * (float)g_rate / NGSID_BLOCK;
+    text(x + 16, y + 12, 13, DIM, "DIGI-KANAL");
+    text(x + 16, y + 30, 11, FAINT, "Samples \xfc" "ber das");
+    text(x + 16, y + 44, 11, FAINT, "Lautst\xe4rkeregister");
+    char b[48];
+    snprintf(b, sizeof b, "%.1f kHz", rate / 1000.0f);
+    text(x + 16, y + 66, 13, alpha(active && !muted ? dc : DIM, active ? 1.0f : 0.5f), active ? b : "--");
+    float lx = x + 130, ly = y + 21;
+    rrect(lx - 6, ly - 6, 12, 12, 6, alpha(FAINT, 0.5f));
+    if (active && !muted) { set_additive(1); blob(lx, ly, 10, alpha(dc, 0.55f)); set_additive(0); rrect(lx - 5, ly - 5, 10, 10, 5, dc); }
+
+    float sx = x + 160, sy = y + 12, sw = w - 176, sh = h - 24;
+    rrect(sx, sy, sw, sh, 8, C(0.03f, 0.04f, 0.07f, 1));
+    for (int g = 1; g < 4; g++) rect(sx + 6, sy + sh * g / 4.0f, sw - 12, 1, alpha(FAINT, 0.18f));
+    double dmean = 0;
+    for (int i = 0; i < NGSID_BLOCK; i++) dmean += d[i];
+    dmean /= NGSID_BLOCK;
+    float dpk = 0;
+    for (int i = 0; i < NGSID_BLOCK; i++) { float a = (float)fabs(d[i] - dmean); if (a > dpk) dpk = a; }
+    float target = dpk < 3 ? 3.0f : dpk;       /* AC coupled: the sample steps ride on a DC level */
+    if (target > digi_dmax) digi_dmax = target; else digi_dmax += (target - digi_dmax) * 0.06f;
+    enum { NS = 520 };
+    static float pts[NS * 4 + 4];
+    int np = 0;
+    float x0 = sx + 6, wid = sw - 12, top = sy + 8, bot = sy + sh - 8;
+    for (int i = 0; i < NS; i++) {
+        float v = muted ? 0 : (float)(d[i] - dmean) / digi_dmax;
+        if (v > 1) v = 1;
+        if (v < -1) v = -1;
+        float yy = (top + bot) / 2 - v * (bot - top) / 2;
+        float xa = x0 + wid * (float)i / NS, xb = x0 + wid * (float)(i + 1) / NS;
+        pts[np * 2] = xa; pts[np * 2 + 1] = yy; np++;
+        pts[np * 2] = xb; pts[np * 2 + 1] = yy; np++;
+    }
+    col lc = muted ? alpha(FAINT, 1) : dc;
+    set_additive(1);
+    polyline(pts, np, 4.5f, 3.5f, alpha(lc, 0.26f));
+    set_additive(0);
+    polyline(pts, np, 1.2f, 3.0f, mix(lc, C(1, 1, 1, 1), 0.3f));
+    if (!muted)   /* sample points: a small square wherever the level changes */
+        for (int i = 1; i < NS; i++)
+            if (d[i] != d[i - 1]) {
+                float v = (float)(d[i] - dmean) / digi_dmax; if (v > 1) v = 1; if (v < -1) v = -1;
+                float xx = x0 + wid * (float)i / NS, yy = (top + bot) / 2 - v * (bot - top) / 2;
+                rect(xx - 1.5f, yy - 1.5f, 3, 3, mix(dc, C(1, 1, 1, 1), 0.6f));
+            }
+    if (muted) {
+        rrect(x, y, w, h, 14, C(0.03f, 0.04f, 0.07f, 0.55f));
+        text(x + w / 2 - text_width("STUMM", 22) / 2, y + h / 2 - 14, 22, VC[2], "STUMM");
+    }
+}
+
+static void draw_ui(const vis_t *vs, double t, double dt) {
+    float W = view_w, H = view_h;
+    int vol_changed = 0;
+    (void)dt;
+
+    /* background */
+    rect_grad(0, 0, W, H, BG1, BG0);
+    float act = 0;
+    for (int v = 0; v < 3; v++) {
+        float target = (vs->running && (vs->vi[v].ctrl & 1)) ? 1.0f : (vs->running ? vs->vi[v].level / 127.0f : 0);
+        if (g_mute >> v & 1) target = 0;
+        glow[v] += (target - glow[v]) * 0.12f;
+        act += glow[v];
+    }
+    set_additive(1);
+    blob(W * 0.25f, -30, 380, alpha(VC[0], 0.06f + 0.05f * glow[0]));
+    blob(W * 0.60f, -60, 420, alpha(VC[1], 0.05f + 0.05f * glow[1]));
+    blob(W * 0.92f, H * 0.9f, 380, alpha(VC[2], 0.04f + 0.05f * glow[2]));
+    set_additive(0);
+
+    const float M = 16, SB = 288;
+    /* ---------------- playlist sidebar */
+    {
+        float x = M, y = M, w = SB, h = H - 2 * M;
+        card(x, y, w, h, 0);
+        text(x + 18, y + 14, 13, DIM, "PLAYLIST");
+        char cnt[32];
+        snprintf(cnt, sizeof cnt, "%d", npl);
+        text_right(x + w - 18, y + 14, 13, DIM, cnt);
+        float ry = y + 44, rh = 28, area = h - 44 - 40;
+        int vis_rows = (int)(area / rh);
+        int maxscroll = npl > vis_rows ? npl - vis_rows : 0;
+        if (list_follow && cur >= 0) {
+            if (cur < list_scroll) list_scroll = (float)cur;
+            if (cur >= list_scroll + vis_rows) list_scroll = (float)(cur - vis_rows + 1);
+            list_follow = 0;
+        }
+        if (list_scroll > maxscroll) list_scroll = (float)maxscroll;
+        if (list_scroll < 0) list_scroll = 0;
+        int first = (int)list_scroll;
+        for (int r = 0; r < vis_rows + 1 && first + r < npl; r++) {
+            int i = first + r;
+            float yy = ry + r * rh;
+            if (yy + rh > y + h - 36) break;
+            int isc = i == cur;
+            int hv = hit(x + 8, yy, w - 16, rh);
+            if (isc) {
+                rrect(x + 8, yy, w - 16, rh - 2, 8, alpha(VC[0], 0.16f));
+                rrect(x + 8, yy + 5, 3, rh - 12, 1.5f, VC[0]);
+            } else if (hv)
+                rrect(x + 8, yy, w - 16, rh - 2, 8, alpha(EDGE, 0.25f));
+            char lab[160];
+            snprintf(lab, sizeof lab, "%s", pl[i].label);
+            fit_text(lab, w - 52, 14);
+            text(x + 20, yy + 5, 14, isc ? TXT : DIM, lab);
+            if (clicked(x + 8, yy, w - 16, rh)) { play_index(i, 0); click = 0; }
+        }
+        if (!npl) {
+            text(x + 18, y + 60, 14, DIM, "Keine Dateien.");
+            text(x + 18, y + 84, 13, FAINT, "SID-Dateien oder einen");
+            text(x + 18, y + 102, 13, FAINT, "Ordner ins Fenster ziehen.");
+        }
+        if (npl > vis_rows) {   /* scrollbar */
+            float th = area * vis_rows / npl;
+            if (th < 24) th = 24;
+            float ty = ry + (area - th) * (maxscroll ? list_scroll / maxscroll : 0);
+            rrect(x + w - 8, ty, 3, th, 1.5f, alpha(DIM, 0.5f));
+        }
+        text(x + 18, y + h - 28, 11, FAINT, "ngsid  \xb7  VacSid Clean-Room");
+    }
+
+    float ax = M + SB + M, aw = W - ax - M;
+
+    /* ---------------- header */
+    const tune_t *tn = g_tune;
+    float hy = M, hh = 112;
+    card(ax, hy, aw, hh, 0);
+    {
+        char title[160], sub[200];
+        if (tn) {
+            snprintf(title, sizeof title, "%s", tn->info.name[0] ? tn->info.name : (cur >= 0 ? pl[cur].label : ""));
+            snprintf(sub, sizeof sub, "%s%s%s", tn->info.author, tn->info.released[0] ? "  \xb7  " : "", tn->info.released);
+        } else {
+            snprintf(title, sizeof title, "ngsid");
+            snprintf(sub, sizeof sub, "SID-Player  \xb7  Clean-Room Nachbau von VacSid");
+        }
+        float tsize = 32;
+        while (tsize > 18 && text_width(title, tsize) > aw - 220) tsize -= 2;
+        text(ax + 22, hy + 14, tsize, TXT, title);
+        fit_text(sub, aw - 220, 16);
+        text(ax + 22, hy + 14 + tsize + 6, 16, DIM, sub);
+        if (tn) {
+            float cx = ax + 22, cy = hy + hh - 30;
+            cx += chip(cx, cy, tn->info.rsid ? "RSID" : "PSID", VC[0], 1);
+            cx += chip(cx, cy, tn->pal ? "PAL" : "NTSC", VC[2], 1);
+            if (tn->info.sid_model == 1) cx += chip(cx, cy, "MOS 6581", DIM, 1);
+            else if (tn->info.sid_model == 2) cx += chip(cx, cy, "MOS 8580", DIM, 1);
+            char b[80];
+            snprintf(b, sizeof b, "LOAD $%04X", tn->info.load);
+            cx += chip(cx, cy, b, DIM, 0);
+            snprintf(b, sizeof b, "INIT $%04X", tn->info.init);
+            cx += chip(cx, cy, b, DIM, 0);
+            snprintf(b, sizeof b, "PLAY $%04X", tn->info.play);
+            cx += chip(cx, cy, b, DIM, 0);
+            if (tn->info.sid2) {
+                snprintf(b, sizeof b, "2. SID $%04X (stumm)", tn->info.sid2);
+                cx += chip(cx, cy, b, WARN, 1);
+            }
+        }
+        if (g_error[0]) text(ax + 22, hy + hh - 54, 13, WARN, g_error);
+        /* time + song */
+        char tb[32];
+        double sec = (double)vs->frames / g_rate;
+        mmss(tb, sizeof tb, sec);
+        text_right(ax + aw - 22, hy + 12, 44, TXT, tb);
+        if (tn) {
+            char sb[48];
+            snprintf(sb, sizeof sb, "SONG %d / %d", tn->song, tn->info.songs);
+            text_right(ax + aw - 22, hy + 66, 16, VC[0], sb);
+            if (g_paused) text_right(ax + aw - 22, hy + 88, 13, VC[2], "PAUSE");
+        }
+    }
+
+    /* ---------------- voice cards */
+    float vy = hy + hh + M, vh = 214, gap = M;
+    float vw = (aw - 2 * gap) / 3;
+    for (int v = 0; v < 3; v++) {
+        float vx = ax + v * (vw + gap);
+        draw_voice(v, vx, vy, vw, vh, vs, t);
+        if (clicked(vx, vy, vw, vh)) { g_mute ^= 1u << v; if (g_tune) ngsid_set_voice_mute(g_tune->s, g_mute); click = 0; }
+    }
+
+    /* ---------------- digi channel */
+    float dy = vy + vh + M, dh = 96;
+    draw_digi(ax, dy, aw, dh, vs);
+    if (clicked(ax, dy, aw, dh)) { g_mute ^= 8u; if (g_tune) ngsid_set_voice_mute(g_tune->s, g_mute); click = 0; }
+
+    /* ---------------- SID strip (filter, volume) */
+    float fy = dy + dh + M, fh = 46;
+    card(ax, fy, aw, fh, 0);
+    {
+        const uint8_t *r = vs->reg;
+        int cutoff = (r[0x16] << 3) | (r[0x15] & 7), res = r[0x17] >> 4, route = r[0x17] & 7, mode = r[0x18], volm = r[0x18] & 15;
+        float cx = ax + 18, cy = fy + 13;
+        text(cx, cy + 1, 12, DIM, "FILTER");
+        cx += 56;
+        cx += chip(cx, cy, "LP", VC[0], (mode & 0x10) != 0);
+        cx += chip(cx, cy, "BP", VC[0], (mode & 0x20) != 0);
+        cx += chip(cx, cy, "HP", VC[0], (mode & 0x40) != 0);
+        cx += 10;
+        text(cx, cy + 1, 12, DIM, "CUTOFF");
+        cx += 56;
+        rrect(cx, cy + 7, 120, 6, 3, alpha(FAINT, 0.35f));
+        rrect(cx, cy + 7, 6 + 114.0f * cutoff / 2047.0f, 6, 3, VC[1]);
+        cx += 130;
+        char b[32];
+        snprintf(b, sizeof b, "RES %d", res);
+        text(cx, cy + 1, 12, DIM, b);
+        cx += 62;
+        text(cx, cy + 1, 12, DIM, "ROUTE");
+        cx += 50;
+        for (int v = 0; v < 3; v++) { snprintf(b, sizeof b, "V%d", v + 1); cx += chip(cx, cy, b, VC[v], (route >> v & 1) != 0); }
+        float rx = ax + aw - 18;
+        snprintf(b, sizeof b, "%d", volm);
+        rx -= text_right(rx, cy, 14, TXT, b);
+        text_right(rx - 8, cy + 1, 12, DIM, "SID VOL");
+        snprintf(b, sizeof b, "DIGI %d%%  ( [ / ] )", g_cfg.digi_gain);
+        text_right(rx - 100, cy + 1, 12, g_cfg.digi_gain == 100 ? DIM : VC[2], b);
+    }
+
+    /* ---------------- spectrum + VU */
+    float sy = fy + fh + M, bot = 62;
+    float sh = H - M - bot - sy - M;
+    if (sh < 120) sh = 120;
+    float vuw = 132, spw = aw - vuw - M;
+    card(ax, sy, spw, sh, 0);
+    text(ax + 18, sy + 12, 12, DIM, "SPEKTRUM");
+    {
+        float bx = ax + 18, bw = spw - 36, by0 = sy + 34, bh = (sh - 34 - 36) * 0.74f, base = by0 + bh;
+        for (int g = 0; g <= 4; g++) {
+            float gy = by0 + bh * g / 4.0f;
+            rect(bx, gy, bw, 1, alpha(FAINT, 0.22f));
+        }
+        float step = bw / NBANDS, barw = step * 0.68f;
+        float refl = (sh - 34 - 36) * 0.26f;
+        for (int b = 0; b < NBANDS; b++) {
+            float xx = bx + b * step + (step - barw) / 2;
+            float hh2 = band[b] * bh;
+            float u = (float)b / (NBANDS - 1);
+            col lo = u < 0.5f ? mix(VC[0], VC[1], u * 2) : mix(VC[1], VC[2], (u - 0.5f) * 2);
+            col top = mix(lo, C(1, 1, 1, 1), 0.35f);
+            if (hh2 > 1) {
+                rect_grad(xx, base - hh2, barw, hh2, top, alpha(lo, 0.35f));
+                float rh2 = hh2 * 0.35f < refl ? hh2 * 0.35f : refl;
+                rect_grad(xx, base + 2, barw, rh2, alpha(lo, 0.22f), alpha(lo, 0.0f));
+            }
+            float py = base - bandpk[b] * bh;
+            if (bandpk[b] > 0.02f) rect(xx, py - 3, barw, 2, alpha(top, 0.95f));
+        }
+        set_additive(1);
+        for (int b = 0; b < NBANDS; b += 2) {
+            float u = (float)b / (NBANDS - 1);
+            col lo = u < 0.5f ? mix(VC[0], VC[1], u * 2) : mix(VC[1], VC[2], (u - 0.5f) * 2);
+            blob(bx + (b + 0.5f) * step, base - band[b] * bh, 14 + band[b] * 10, alpha(lo, 0.10f * band[b]));
+        }
+        set_additive(0);
+        static const struct { double f; const char *l; } AX[] = { { 100, "100" }, { 1000, "1k" }, { 10000, "10k" } };
+        for (int i = 0; i < 3; i++) {
+            float xx = bx + bw * (float)(log(AX[i].f / 40.0) / log(17000.0 / 40.0));
+            text(xx - text_width(AX[i].l, 11) / 2, sy + sh - 24, 11, alpha(DIM, 0.8f), AX[i].l);
+        }
+    }
+    {
+        float x = ax + spw + M, w = vuw;
+        card(x, sy, w, sh, 0);
+        text(x + 18, sy + 12, 12, DIM, "PEGEL");
+        float my0 = sy + 34, mh = sh - 34 - 38, mw = 26;
+        enum { SEG = 24 };
+        for (int c = 0; c < 2; c++) {
+            float mxx = x + 22 + c * (mw + 28);
+            float sg = mh / SEG;
+            for (int i = 0; i < SEG; i++) {
+                float lvl = (float)(i + 1) / SEG;
+                float yy = my0 + mh - (i + 1) * sg;
+                col base = lvl > 0.9f ? WARN : (lvl > 0.72f ? VC[2] : OKC);
+                int on = vu[c] >= lvl - 0.5f / SEG;
+                rrect(mxx, yy + 1, mw, sg - 2, 2, alpha(base, on ? 0.95f : 0.12f));
+            }
+            int pi = (int)(vupk[c] * SEG);
+            if (pi > 0 && pi <= SEG) {
+                float lvl = (float)pi / SEG;
+                float yy = my0 + mh - pi * sg;
+                col base = lvl > 0.9f ? WARN : (lvl > 0.72f ? VC[2] : OKC);
+                rrect(mxx, yy + 1, mw, sg - 2, 2, mix(base, C(1, 1, 1, 1), 0.4f));
+            }
+            text(mxx + mw / 2 - 4, sy + sh - 28, 13, DIM, c ? "R" : "L");
+        }
+    }
+
+    /* ---------------- bottom control bar */
+    {
+        float by = H - M - bot + 0, bx = ax, bw = aw;
+        card(bx, by, bw, bot - 0, 0);
+        float cy = by + bot / 2;
+        struct { float x; int kind; } btn[3] = { { bx + 22, 0 }, { bx + 74, 1 }, { bx + 126, 2 } };
+        for (int i = 0; i < 3; i++) {
+            float x = btn[i].x, r = 20;
+            int hv = hit(x, cy - r, 2 * r, 2 * r);
+            rrect(x, cy - r, 2 * r, 2 * r, r, alpha(hv ? VC[0] : EDGE, hv ? 0.30f : 0.35f));
+            col ic = hv ? TXT : DIM;
+            float ccx = x + r, ccy = cy;
+            if (btn[i].kind == 0) { tri(ccx + 6, ccy - 8, ccx + 6, ccy + 8, ccx - 6, ccy, ic); rect(ccx - 9, ccy - 8, 3, 16, ic); }
+            else if (btn[i].kind == 2) { tri(ccx - 6, ccy - 8, ccx - 6, ccy + 8, ccx + 6, ccy, ic); rect(ccx + 6, ccy - 8, 3, 16, ic); }
+            else if (g_paused) tri(ccx - 5, ccy - 9, ccx - 5, ccy + 9, ccx + 9, ccy, ic);
+            else { rect(ccx - 7, ccy - 8, 5, 16, ic); rect(ccx + 2, ccy - 8, 5, 16, ic); }
+            if (clicked(x, cy - r, 2 * r, 2 * r)) {
+                if (btn[i].kind == 0) change_song(-1);
+                else if (btn[i].kind == 2) change_song(1);
+                else g_paused = !g_paused;
+                click = 0;
+            }
+        }
+        text(bx + 190, cy - 16, 11, FAINT, "Leertaste Pause  \xb7  Pfeile links/rechts Song  \xb7  hoch/runter Datei");
+        text(bx + 190, cy + 2, 11, FAINT, "1-4 Voice/Digi stumm  \xb7  +/- Lautst\xe4rke  \xb7  F Vollbild  \xb7  Esc Ende");
+        float vx = bx + bw - 22 - 170, vyb = cy - 3;
+        text(vx - 44, cy - 9, 12, DIM, "VOL");
+        rrect(vx, vyb, 170, 6, 3, alpha(FAINT, 0.4f));
+        rrect(vx, vyb, 6 + 164 * g_vol, 6, 3, VC[0]);
+        rrect(vx + 164 * g_vol - 4, vyb - 5, 14, 16, 7, TXT);
+        if (clicked(vx - 8, cy - 18, 186, 36)) vol_drag = 1;
+        if (vol_drag) {
+            if (!mouse_down) vol_drag = 0;
+            else { g_vol = (mx - vx) / 170.0f; vol_changed = 1; }
+        }
+    }
+    if (vol_changed) { if (g_vol < 0) g_vol = 0; if (g_vol > 1) g_vol = 1; }
+    (void)act;
+}
+
+/* ================================================================== main */
+
+static void save_screenshot(const char *file, int w, int h) {
+    uint8_t *px = (uint8_t *)malloc((size_t)w * (size_t)h * 4);
+    uint8_t *fl = (uint8_t *)malloc((size_t)w * (size_t)h * 4);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    for (int y = 0; y < h; y++) memcpy(fl + (size_t)y * (size_t)w * 4, px + (size_t)(h - 1 - y) * (size_t)w * 4, (size_t)w * 4);
+    SDL_Surface *sf = SDL_CreateRGBSurfaceFrom(fl, w, h, 32, w * 4, 0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
+    if (sf) { SDL_SaveBMP(sf, file); SDL_FreeSurface(sf); }
+    free(px); free(fl);
+}
+
+static int gl_compile(GLenum type, const char *src) {
+    GLuint sh = glCreateShader(type);
+    glShaderSource(sh, 1, &src, NULL);
+    glCompileShader(sh);
+    GLint ok = 0;
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[1024];
+        glGetShaderInfoLog(sh, sizeof log, NULL, log);
+        fprintf(stderr, "shader error: %s\n", log);
+        return 0;
+    }
+    return (int)sh;
+}
+
+int main(int argc, char **argv) {
+    const char *shot = NULL;
+    int shot_frames = 90, first_song = 0;
+    ngsid_config_default(&g_cfg);
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--pal")) g_pal_override = 1;
+        else if (!strcmp(argv[i], "--ntsc")) g_pal_override = 0;
+        else if (!strcmp(argv[i], "--rate") && i + 1 < argc) g_rate = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--exact-clock")) g_cfg.exact_clock = 1;
+        else if (!strcmp(argv[i], "--no-limiter")) g_cfg.limiter = 0;
+        else if (!strcmp(argv[i], "--limiter")) g_cfg.limiter = 1;
+        else if (!strcmp(argv[i], "--digi-wrap")) g_cfg.digi_wrap = 1;
+        else if (!strcmp(argv[i], "--filter-clamp")) g_cfg.filter_clamp = 1;
+        else if (!strcmp(argv[i], "--no-vol-burst")) g_no_burst = 1;
+        else if (!strcmp(argv[i], "--digi-gain") && i + 1 < argc) g_cfg.digi_gain = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--vbi")) psid_force_vbi = 1;
+        else if (!strcmp(argv[i], "-s") && i + 1 < argc) first_song = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) shot = argv[++i];
+        else if (!strcmp(argv[i], "--frames") && i + 1 < argc) shot_frames = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+            printf("usage: %s [--pal|--ntsc] [--rate N] [--exact-clock] [--no-limiter] [--digi-wrap] [-s song] "
+                   "[--screenshot out.bmp [--frames N]] file.sid|dir ...\n", argv[0]);
+            return 0;
+        } else if (argv[i][0] == '-' && argv[i][1]) { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
+        else add_path(argv[i], 0);
+    }
+
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+    SDL_Window *win = SDL_CreateWindow("ngsid", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 860,
+                                       SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    if (!win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
+    SDL_SetWindowMinimumSize(win, 900, 600);
+    SDL_GLContext ctx = SDL_GL_CreateContext(win);
+    if (!ctx) { fprintf(stderr, "OpenGL 3.3 context: %s\n", SDL_GetError()); return 1; }
+    if (gl_load()) return 1;
+    SDL_GL_SetSwapInterval(1);
+
+    int vsh = gl_compile(GL_VERTEX_SHADER, VS), fsh = gl_compile(GL_FRAGMENT_SHADER, FS);
+    if (!vsh || !fsh) return 1;
+    prog = glCreateProgram();
+    glAttachShader(prog, (GLuint)vsh); glAttachShader(prog, (GLuint)fsh);
+    glLinkProgram(prog);
+    GLint lk = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &lk);
+    if (!lk) { char log[1024]; glGetProgramInfoLog(prog, sizeof log, NULL, log); fprintf(stderr, "link: %s\n", log); return 1; }
+    u_res = glGetUniformLocation(prog, "res");
+    u_pxs = glGetUniformLocation(prog, "pxs");
+    u_tex = glGetUniformLocation(prog, "tex");
+
+    vb = (vtx *)malloc(sizeof(vtx) * MAXV);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(vtx) * MAXV), NULL, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0); glVertexAttribPointer(0, 2, GL_FLOAT, 0, sizeof(vtx), (void *)0);
+    glEnableVertexAttribArray(1); glVertexAttribPointer(1, 2, GL_FLOAT, 0, sizeof(vtx), (void *)8);
+    glEnableVertexAttribArray(2); glVertexAttribPointer(2, 4, GL_FLOAT, 0, sizeof(vtx), (void *)16);
+    glEnableVertexAttribArray(3); glVertexAttribPointer(3, 4, GL_FLOAT, 0, sizeof(vtx), (void *)32);
+
+    for (int i = 0; i < 256; i++) glyph_idx[i] = -1;
+    for (int i = 0; i < FONT_GLYPH_COUNT; i++) if (font_glyphs[i].code < 256) glyph_idx[font_glyphs[i].code] = i;
+    glGenTextures(1, &fonttex);
+    glBindTexture(GL_TEXTURE_2D, fonttex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, FONT_ATLAS_W, FONT_ATLAS_H, 0, GL_RED, GL_UNSIGNED_BYTE, font_atlas);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    SDL_AudioSpec want, have;
+    SDL_zero(want);
+    want.freq = g_rate; want.format = AUDIO_S16SYS; want.channels = 2; want.samples = 1024; want.callback = audio_cb;
+    g_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (!g_dev) fprintf(stderr, "audio: %s (continuing without sound)\n", SDL_GetError());
+    else SDL_PauseAudioDevice(g_dev, 0);
+
+    if (npl) play_index(0, first_song);
+
+    int running = 1, frame = 0, fullscreen = 0;
+    Uint64 t0 = SDL_GetPerformanceCounter(), tlast = t0;
+    double freq = (double)SDL_GetPerformanceFrequency();
+    while (running) {
+        SDL_Event e;
+        click = 0;
+        while (SDL_PollEvent(&e)) {
+            switch (e.type) {
+            case SDL_QUIT: running = 0; break;
+            case SDL_MOUSEBUTTONDOWN:
+                if (e.button.button == SDL_BUTTON_LEFT) { click = 1; clickx = (int)e.button.x; clicky = (int)e.button.y; mouse_down = 1; }
+                break;
+            case SDL_MOUSEBUTTONUP: if (e.button.button == SDL_BUTTON_LEFT) mouse_down = 0; break;
+            case SDL_MOUSEWHEEL:
+                if (mx < 16 + 288 + 16) { list_scroll -= e.wheel.y * 3; }
+                break;
+            case SDL_DROPFILE: {
+                int was = npl;
+                add_path(e.drop.file, 0);
+                SDL_free(e.drop.file);
+                if (npl > was && cur < 0) play_index(was, 0);
+                break;
+            }
+            case SDL_KEYDOWN:
+                switch (e.key.keysym.sym) {
+                case SDLK_ESCAPE: running = 0; break;
+                case SDLK_SPACE: g_paused = !g_paused; break;
+                case SDLK_LEFT: change_song(-1); break;
+                case SDLK_RIGHT: change_song(1); break;
+                case SDLK_UP: change_file(-1); break;
+                case SDLK_DOWN: change_file(1); break;
+                case SDLK_r: if (cur >= 0) play_index(cur, cur_song); break;
+                case SDLK_LEFTBRACKET: case SDLK_RIGHTBRACKET:
+                    g_cfg.digi_gain += e.key.keysym.sym == SDLK_RIGHTBRACKET ? 5 : -5;
+                    if (g_cfg.digi_gain < 0) g_cfg.digi_gain = 0;
+                    if (g_cfg.digi_gain > 400) g_cfg.digi_gain = 400;
+                    if (g_tune) ngsid_set_digi_gain(g_tune->s, g_cfg.digi_gain);
+                    break;
+                case SDLK_1: case SDLK_2: case SDLK_3: case SDLK_4:
+                    g_mute ^= 1u << (e.key.keysym.sym - SDLK_1);
+                    if (g_tune) ngsid_set_voice_mute(g_tune->s, g_mute);
+                    break;
+                case SDLK_PLUS: case SDLK_KP_PLUS: case SDLK_EQUALS: g_vol += 0.05f; if (g_vol > 1) g_vol = 1; break;
+                case SDLK_MINUS: case SDLK_KP_MINUS: g_vol -= 0.05f; if (g_vol < 0) g_vol = 0; break;
+                case SDLK_f: case SDLK_F11:
+                    fullscreen = !fullscreen;
+                    SDL_SetWindowFullscreen(win, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+                    break;
+                default: break;
+                }
+                break;
+            default: break;
+            }
+        }
+        int ww, wh, dw, dh;
+        SDL_GetWindowSize(win, &ww, &wh);
+        SDL_GL_GetDrawableSize(win, &dw, &dh);
+        view_scale = (float)dw / 1280.0f;
+        if ((float)dh / 860.0f < view_scale) view_scale = (float)dh / 860.0f;
+        if (view_scale < 0.5f) view_scale = 0.5f;
+        view_w = (float)dw / view_scale;
+        view_h = (float)dh / view_scale;
+        int mxi, myi;
+        Uint32 mb = SDL_GetMouseState(&mxi, &myi);
+        mouse_down = (mb & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+        float k = ww ? (float)dw / (float)ww / view_scale : 1;
+        mx = (float)mxi * k; my = (float)myi * k;
+        if (click) { clickx = (int)(clickx * k); clicky = (int)(clicky * k); }
+
+        Uint64 now = SDL_GetPerformanceCounter();
+        double dt = (double)(now - tlast) / freq;
+        tlast = now;
+        if (dt > 0.1) dt = 0.1;
+
+        static vis_t snap;
+        if (g_dev) SDL_LockAudioDevice(g_dev);
+        snap = g_vis;
+        g_vis.peak[0] = g_vis.peak[1] = 0;
+        if (g_dev) SDL_UnlockAudioDevice(g_dev);
+        analyse(&snap, (float)dt);
+
+        glViewport(0, 0, dw, dh);
+        glClearColor(BG0.r, BG0.g, BG0.b, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(prog);
+        glUniform2f(u_res, view_w, view_h);
+        glUniform1f(u_pxs, view_scale);
+        glUniform1i(u_tex, 0);
+        glBindVertexArray(vao);
+        glBindTexture(GL_TEXTURE_2D, fonttex);
+        draw_ui(&snap, (double)(now - t0) / freq, dt);
+        set_additive(0);
+        flush();
+        if (shot && ++frame >= shot_frames) {
+            save_screenshot(shot, dw, dh);
+            running = 0;
+        }
+        SDL_GL_SwapWindow(win);
+        double spent = (double)(SDL_GetPerformanceCounter() - now) / freq;
+        if (spent < 0.012) SDL_Delay((Uint32)((0.0167 - spent) * 1000));   /* in case vsync is unavailable */
+    }
+
+    if (g_dev) { SDL_CloseAudioDevice(g_dev); }
+    tune_free(g_tune);
+    SDL_GL_DeleteContext(ctx);
+    SDL_DestroyWindow(win);
+    SDL_Quit();
+    return 0;
+}

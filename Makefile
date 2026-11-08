@@ -56,8 +56,15 @@ $(SYNTH): ngsid.c ngsid.h | $(OBJ_DIR)
 $(PSIDINFO): psid.c psid.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ psid.c
 
-$(OBJ_DIR)/main.o: gui/main.c gui/font_data.h gui/hvsc.h psid.h ngsid.h lsp/engine.h | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -I. -Igui $$(pkg-config --cflags sdl2) -c -o $@ gui/main.c
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
+$(OBJ_DIR)/version.h: FORCE | $(OBJ_DIR)
+	@echo '#define NGSID_VERSION "$(VERSION)"' > $@.tmp; if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
+
+FORCE:
+
+$(OBJ_DIR)/main.o: gui/main.c gui/font_data.h gui/hvsc.h psid.h ngsid.h lsp/engine.h $(OBJ_DIR)/version.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -I. -Igui -I$(OBJ_DIR) $$(pkg-config --cflags sdl2) -c -o $@ gui/main.c
 
 $(OBJ_DIR)/hvsc.o: gui/hvsc.c gui/hvsc.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -Igui -c -o $@ gui/hvsc.c

@@ -27,4 +27,7 @@ int hvsc_parse_listing(const char *html, size_t len, hvsc_entry **out, int *n);
 int hvsc_list(const char *folder, hvsc_entry **out, int *n);
 int hvsc_fetch(const char *file, char *cache_path, size_t cap);
 
+/* Blocking HTTPS GET through curl into a malloc'd buffer (caller frees). Same return codes. */
+int hvsc_http_get(const char *url, char **buf, size_t *len);
+
 #endif

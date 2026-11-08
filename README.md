@@ -63,9 +63,13 @@ Options:
 | `--exact-clock` | use the exact C64 clock instead of VacSid's slightly detuned one |
 | `--limiter`, `--no-limiter` | force the limiter on or off (default: automatic, on for digi tunes) |
 | `--no-vol-burst` | disable detection of volume-register digi bursts |
+| `--no-update-check` | do not ask GitHub for a newer release at startup |
+| `--version` | print the version and quit |
 | `--digi-gain N` | digi level in percent |
 | `--digi-wrap` | 8-bit wrap-around of the digi sum (not recommended) |
 | `--filter-clamp` | clamp filter overflow instead of wrapping |
+
+The version is shown at the bottom of the playlist panel. At startup ngSid asks the GitHub API once (through `curl`, in the background) whether a newer release exists and then shows a clickable hint; nothing else is sent or stored. Switch it off with `--no-update-check`.
 
 SID files are not included. The best source is the High Voltage SID Collection (<https://hvsc.de>).
 

@@ -33,6 +33,10 @@ jobs:
           install -m755 ngSid AppDir/usr/bin/ngSid
           cp packaging/ngsid.desktop AppDir/ngsid.desktop
           cp packaging/ngsid.svg AppDir/ngsid.svg
+          cp packaging/icons/ngsid-256.png AppDir/ngsid.png
+          cp packaging/icons/ngsid-256.png AppDir/.DirIcon
+          mkdir -p AppDir/usr/share/metainfo
+          cp packaging/ngsid.metainfo.xml AppDir/usr/share/metainfo/ngsid.appdata.xml
           cp "$(ldconfig -p | awk '/libSDL2-2.0.so.0 /{print $NF; exit}')" AppDir/usr/lib/
           printf '%s\n' '#!/bin/sh' \
             'HERE="$(dirname "$(readlink -f "$0")")"' \

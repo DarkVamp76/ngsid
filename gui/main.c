@@ -14,6 +14,7 @@
  *
  * Options: --pal | --ntsc, --rate N, --exact-clock, --limiter | --no-limiter, --digi-wrap,
  *          --filter-clamp, --no-vol-burst, --digi-gain N, -s song,
+ *          --no-update-check, --version,
  *          --screenshot out.bmp [--frames N]   (render N frames, save, quit; for testing)
  */
 #define _DEFAULT_SOURCE
@@ -21,6 +22,7 @@
 #include "../lsp/engine.h"
 #include "font_data.h"
 #include "hvsc.h"
+#include "version.h"
 
 #include <SDL2/SDL.h>
 
@@ -527,6 +529,68 @@ static struct {
     hvsc_entry *res;
 } job;
 
+/* ---- update check: asks the GitHub API once at startup (curl, worker thread) */
+#define NGSID_REPO "DarkVamp76/ngsid"
+static SDL_atomic_t upd_state;          /* 0 idle/none, 1 running, 2 update available */
+static char upd_tag[48], upd_url[160];
+static int g_check_updates = 1;
+
+static const char *ver_plain(const char *v) { return (*v == 'v' || *v == 'V') ? v + 1 : v; }
+
+/* parse "x.y.z" (leading numbers only); returns the number of parts found */
+static int ver_parse(const char *v, int out[3]) {
+    int n = 0;
+    out[0] = out[1] = out[2] = 0;
+    v = ver_plain(v);
+    while (n < 3 && *v >= '0' && *v <= '9') {
+        out[n++] = atoi(v);
+        while (*v >= '0' && *v <= '9') v++;
+        if (*v == '.') v++; else break;
+    }
+    return n;
+}
+
+static int update_fn(void *ud) {
+    (void)ud;
+    char *buf = NULL;
+    size_t len = 0;
+    const char *url = getenv("NGSID_UPDATE_URL");   /* testing aid */
+    if (!url || !*url) url = "https://api.github.com/repos/" NGSID_REPO "/releases/latest";
+    if (hvsc_http_get(url, &buf, &len) == 0 && buf) {
+        buf = (char *)realloc(buf, len + 1);
+        buf[len] = 0;
+        const char *k = strstr(buf, "\"tag_name\"");
+        if (k && (k = strchr(k + 10, ':')) && (k = strchr(k, '"'))) {
+            k++;
+            size_t n = strcspn(k, "\"");
+            if (n > 0 && n < sizeof upd_tag) {
+                char tag[48];
+                memcpy(tag, k, n); tag[n] = 0;
+                int a[3], b[3];
+                if (ver_parse(tag, a) && ver_parse(NGSID_VERSION, b)) {
+                    int newer = 0;
+                    for (int i = 0; i < 3; i++) { if (a[i] != b[i]) { newer = a[i] > b[i]; break; } }
+                    if (newer) {
+                        snprintf(upd_tag, sizeof upd_tag, "%s", tag);
+                        snprintf(upd_url, sizeof upd_url, "https://github.com/" NGSID_REPO "/releases/tag/%s", tag);
+                        SDL_AtomicSet(&upd_state, 2);
+                    }
+                }
+            }
+        }
+    }
+    free(buf);
+    if (SDL_AtomicGet(&upd_state) == 1) SDL_AtomicSet(&upd_state, 0);
+    return 0;
+}
+
+static void update_check_start(void) {
+    if (!g_check_updates) return;
+    SDL_AtomicSet(&upd_state, 1);
+    SDL_Thread *t = SDL_CreateThread(update_fn, "update", NULL);
+    if (t) SDL_DetachThread(t); else SDL_AtomicSet(&upd_state, 0);
+}
+
 static int job_fn(void *ud) {
     (void)ud;
     if (job.kind == 0) job.rc = hvsc_list(job.path, &job.res, &job.nres);
@@ -1023,7 +1087,17 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             float ty = ry + (area - th) * (maxscroll ? *sc / maxscroll : 0);
             rrect(x + w - 8, ty, 3, th, 1.5f, alpha(DIM, 0.5f));
         }
-        text(x + 18, y + h - 28, 11, FAINT, "ngSid  \xb7  NextGenSid");
+        {
+            char vb[96];
+            snprintf(vb, sizeof vb, "ngSid %s  \xb7  NextGenSid", NGSID_VERSION);
+            text(x + 18, y + h - 28, 11, FAINT, vb);
+            if (SDL_AtomicGet(&upd_state) == 2 && !browse) {
+                char ub[96];
+                snprintf(ub, sizeof ub, "Update available: %s", upd_tag);
+                text(x + 18, y + h - 48, 12, VC[2], ub);
+                if (clicked(x + 8, y + h - 54, w - 16, 20)) { SDL_OpenURL(upd_url); click = 0; }
+            }
+        }
     }
 
     float ax = M + SB + M, aw = W - ax - M;
@@ -1276,6 +1350,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--digi-wrap")) g_cfg.digi_wrap = 1;
         else if (!strcmp(argv[i], "--filter-clamp")) g_cfg.filter_clamp = 1;
         else if (!strcmp(argv[i], "--no-vol-burst")) g_no_burst = 1;
+        else if (!strcmp(argv[i], "--no-update-check")) g_check_updates = 0;
+        else if (!strcmp(argv[i], "--version")) { printf("ngSid %s\n", NGSID_VERSION); return 0; }
         else if (!strcmp(argv[i], "--digi-gain") && i + 1 < argc) g_cfg.digi_gain = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-s") && i + 1 < argc) first_song = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) shot = argv[++i];
@@ -1283,6 +1359,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             printf("usage: %s [--pal|--ntsc] [--rate N] [--exact-clock] [--limiter|--no-limiter] [--digi-wrap]\n"
                    "       [--filter-clamp] [--no-vol-burst] [--digi-gain N] [-s song]\n"
+                   "       [--no-update-check] [--version]\n"
                    "       [--screenshot out.bmp [--frames N]] [file.sid|dir ...]\n", argv[0]);
             return 0;
         } else if (argv[i][0] == '-' && argv[i][1]) { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
@@ -1298,6 +1375,7 @@ int main(int argc, char **argv) {
                                        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (!win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
     SDL_SetWindowMinimumSize(win, 900, 600);
+    if (!shot) update_check_start();
     SDL_GLContext ctx = SDL_GL_CreateContext(win);
     if (!ctx) { fprintf(stderr, "OpenGL 3.3 context: %s\n", SDL_GetError()); return 1; }
     if (gl_load()) return 1;

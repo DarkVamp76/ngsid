@@ -179,6 +179,11 @@ int hvsc_parse_listing(const char *html, size_t len, hvsc_entry **out, int *n) {
     return 0;
 }
 
+int hvsc_http_get(const char *url, char **buf, size_t *len) {
+    *buf = NULL; *len = 0;
+    return run_curl(url, NULL, buf, len);
+}
+
 int hvsc_list(const char *folder, hvsc_entry **out, int *n) {
     if (!safe_path(folder)) return -1;
     char enc[1024];

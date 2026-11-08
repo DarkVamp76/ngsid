@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>ngsid</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>ngSid</name>
+  <summary>SID music player with the VacSid sound</summary>
+  <description>
+    <p>ngSid (NextGenSid) plays C64 SID music files. It combines cycle-exact C64 emulation from libsidplayfp with a VacSid-style synthesizer and has an OpenGL GUI with voice displays, spectrum and an online HVSC browser.</p>
+  </description>
+  <launchable type="desktop-id">ngsid.desktop</launchable>
+  <url type="homepage">https://github.com/DarkVamp76/ngsid</url>
+  <provides><binary>ngSid</binary></provides>
+  <content_rating type="oars-1.1"/>
+</component>

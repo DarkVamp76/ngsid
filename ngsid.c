@@ -25,6 +25,7 @@ static const uint8_t k_decstep[16] = {1, 2, 3, 4, 6, 6, 6, 8, 8, 8, 8, 8, 8, 8, 
  * voice1 L50/R77, voice2 L63/R63 once mapped through the mixer. The first
  * element of each pair feeds the *right* output byte, the second the left. */
 static const uint8_t k_amp_default[6] = {0x32, 0x4D, 0x4D, 0x32, 0x3F, 0x3F};
+/* order: R1 L1 R2 L2 R3 L3. Hard pan: voice 1 left, voice 2 centre, voice 3 right */
 
 typedef struct {
     uint32_t inc;      /* phase increment, 1/256 cycle * Hz */
@@ -43,6 +44,7 @@ typedef struct {
     uint32_t seed;     /* Borland Pascal Random() seed, drives the noise */
     uint16_t noise_last;
     uint8_t last_wave; /* for OSC3 readback */
+    uint8_t hold_on, hold_wave; /* DAC hold after waveform-off (see ngsid_set_hold) */
     uint8_t buf[NGSID_BLOCK];
 } voice_t;
 
@@ -251,6 +253,7 @@ static void voice_step(ngsid *s, int v, int i) {
         o->wrap = (uint8_t)(old_hi - (uint8_t)(o->phase >> 8));
         wave = gen_wave(o, src);
     }
+    if (o->hold_on) wave = o->hold_wave;
     o->last_wave = wave;
 
     /* envelope */
@@ -480,6 +483,11 @@ const uint8_t *ngsid_digi_wave(const ngsid *s) { return s->digi_buf; }
 
 uint8_t ngsid_shadow_reg(const ngsid *s, unsigned reg) { return reg < 0x20 ? s->shadow[reg] : 0; }
 void ngsid_set_vol_mod(ngsid *s, int active, unsigned nibble) { s->vmod_on = active; s->vmod_nib = nibble & 15u; }
+void ngsid_set_hold(ngsid *s, int voice, int on, uint8_t wave) {
+    if (voice < 0 || voice >= NVOICES) return;
+    s->v[voice].hold_on = on ? 1 : 0;
+    s->v[voice].hold_wave = wave;
+}
 void ngsid_set_digi_gain(ngsid *s, int percent) { s->cfg.digi_gain = percent < 0 ? 0 : (percent > 400 ? 400 : percent); }
 void ngsid_set_voice_mute(ngsid *s, unsigned mask) { s->mute_mask = mask & 15u; }
 

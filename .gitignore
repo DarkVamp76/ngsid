@@ -1,13 +1,13 @@
 # build products
 ngSid
 ngsid_test
-cpu_test
-c64_test
-psid_test
+hvsc_test
+engine_test
+build/
+third_party/
 *.o
 # local material
 *.sid
 *.wav
 *.raw
 *.bmp
-hvsc_test

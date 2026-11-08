@@ -1,0 +1,61 @@
+name: release
+
+# Builds a portable AppImage on Ubuntu 22.04 (old glibc, so it runs on most distributions)
+# and attaches it to the GitHub release of the pushed tag (for example v0.3.0).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config curl libsdl2-dev libfuse2
+
+      - name: Build (libsidplayfp is downloaded and built statically by make)
+        run: make -j"$(nproc)"
+
+      - name: Self-tests
+        run: make check
+
+      - name: Assemble AppDir
+        run: |
+          mkdir -p AppDir/usr/bin AppDir/usr/lib
+          install -m755 ngSid AppDir/usr/bin/ngSid
+          cp packaging/ngsid.desktop AppDir/ngsid.desktop
+          cp packaging/ngsid.svg AppDir/ngsid.svg
+          cp "$(ldconfig -p | awk '/libSDL2-2.0.so.0 /{print $NF; exit}')" AppDir/usr/lib/
+          printf '%s\n' '#!/bin/sh' \
+            'HERE="$(dirname "$(readlink -f "$0")")"' \
+            'export LD_LIBRARY_PATH="$HERE/usr/lib:$LD_LIBRARY_PATH"' \
+            'exec "$HERE/usr/bin/ngSid" "$@"' > AppDir/AppRun
+          chmod +x AppDir/AppRun
+
+      - name: Build AppImage
+        run: |
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir ngSid-x86_64.AppImage
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ngSid-x86_64.AppImage
+          path: ngSid-x86_64.AppImage
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" ngSid-x86_64.AppImage --clobber

@@ -45,6 +45,7 @@ typedef struct {
     uint16_t noise_last;
     uint8_t last_wave; /* for OSC3 readback */
     uint8_t hold_on, hold_wave; /* DAC hold after waveform-off (see ngsid_set_hold) */
+    uint16_t hold_cnt, hold_last; /* samples held in the block being rendered / in the last block */
     uint8_t buf[NGSID_BLOCK];
 } voice_t;
 
@@ -253,7 +254,7 @@ static void voice_step(ngsid *s, int v, int i) {
         o->wrap = (uint8_t)(old_hi - (uint8_t)(o->phase >> 8));
         wave = gen_wave(o, src);
     }
-    if (o->hold_on) wave = o->hold_wave;
+    if (o->hold_on) { wave = o->hold_wave; o->hold_cnt++; }
     o->last_wave = wave;
 
     /* envelope */
@@ -348,6 +349,7 @@ static void frame_tick(ngsid *s) {
 static void render_block(ngsid *s) {
     const int n = NGSID_BLOCK;
     const uint8_t *T = s->tab;
+    for (int v = 0; v < NVOICES; v++) s->v[v].hold_cnt = 0;
 
     for (int i = 0; i < n; i++) {
         frame_tick(s);
@@ -366,6 +368,7 @@ static void render_block(ngsid *s) {
         s->vol_buf[i] = (uint8_t)(s->vmod_on ? s->vmod_nib : s->sid_vol);
         for (int v = 0; v < NVOICES; v++) voice_step(s, v, i);
     }
+    for (int v = 0; v < NVOICES; v++) s->v[v].hold_last = s->v[v].hold_cnt;
     if (s->mute_mask) {
         for (int v = 0; v < NVOICES; v++)
             if (s->mute_mask & (1u << v)) memset(s->v[v].buf, 0, sizeof s->v[v].buf);
@@ -488,6 +491,7 @@ void ngsid_set_hold(ngsid *s, int voice, int on, uint8_t wave) {
     s->v[voice].hold_on = on ? 1 : 0;
     s->v[voice].hold_wave = wave;
 }
+int ngsid_voice_hold(const ngsid *s, int voice) { return (voice >= 0 && voice < NVOICES) ? s->v[voice].hold_last : 0; }
 void ngsid_set_digi_gain(ngsid *s, int percent) { s->cfg.digi_gain = percent < 0 ? 0 : (percent > 400 ? 400 : percent); }
 void ngsid_set_voice_mute(ngsid *s, unsigned mask) { s->mute_mask = mask & 15u; }
 

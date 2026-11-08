@@ -330,6 +330,7 @@ typedef struct {
     uint8_t wave[3][NGSID_BLOCK];
     ngsid_voice_info vi[3];
     uint8_t digi[NGSID_BLOCK];
+    int hold[3];               /* samples of the last block a voice was held (oscillator digi) */
     uint8_t reg[0x20];
     float ring[2048];          /* mono, newest sample last */
     float peak[2];             /* max |sample| per channel since the UI last looked */
@@ -392,6 +393,7 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
                 ngsid_get_voice_info(t->s, v, &g_vis.vi[v]);
             }
             memcpy(g_vis.digi, ngsid_digi_wave(t->s), NGSID_BLOCK);
+            for (int v = 0; v < 3; v++) g_vis.hold[v] = ngsid_voice_hold(t->s, v);
             for (unsigned r = 0; r < 0x20; r++) g_vis.reg[r] = ngsid_shadow_reg(t->s, r);
             g_vis.frames += (uint64_t)have;
             g_vis.running = 1;
@@ -906,11 +908,24 @@ static void draw_voice(int v, float x, float y, float w, float h, const vis_t *v
 
 static float digi_dmax = 32;
 
+/* The digi display normally shows the $D418 volume-register channel. Tunes that play samples
+ * through an oscillator (waveform switching, test bit) are shown there too: -1 = $D418 digi,
+ * 0..2 = that voice. */
+static int digi_source(const vis_t *vs) {
+    int act = 0;
+    for (int i = 0; i < NGSID_BLOCK; i++) if (vs->digi[i]) { act = 1; break; }
+    if (act || !vs->running) return -1;
+    int best = -1, bn = NGSID_BLOCK / 4;
+    for (int v = 0; v < 3; v++) if (vs->hold[v] > bn) { bn = vs->hold[v]; best = v; }
+    return best;
+}
+
 static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
     col dc = C(0.30f, 0.95f, 0.62f, 1);
-    int muted = (g_mute >> 3) & 1;
+    const int src = digi_source(vs);
+    int muted = src >= 0 ? (g_mute >> src) & 1 : (g_mute >> 3) & 1;
     card(x, y, w, h, hit(x, y, w, h));
-    const uint8_t *d = vs->digi;
+    const uint8_t *d = src >= 0 ? vs->wave[src] : vs->digi;
     int changes = 0, active = 0, last = d[0];
     for (int i = 0; i < NGSID_BLOCK; i++) {
         if (d[i] != last) { changes++; last = d[i]; }
@@ -919,8 +934,15 @@ static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
     if (!vs->running) { changes = 0; active = 0; }
     float rate = (float)changes * (float)g_rate / NGSID_BLOCK;
     text(x + 16, y + 12, 13, DIM, "DIGI CHANNEL");
-    text(x + 16, y + 30, 11, FAINT, "Samples via the");
-    text(x + 16, y + 44, 11, FAINT, "volume register");
+    if (src >= 0) {
+        char sb[40];
+        snprintf(sb, sizeof sb, "voice %d oscillator", src + 1);
+        text(x + 16, y + 30, 11, FAINT, "Samples via the");
+        text(x + 16, y + 44, 11, FAINT, sb);
+    } else {
+        text(x + 16, y + 30, 11, FAINT, "Samples via the");
+        text(x + 16, y + 44, 11, FAINT, "volume register");
+    }
     char b[48];
     snprintf(b, sizeof b, "%.1f kHz", rate / 1000.0f);
     text(x + 16, y + 66, 13, alpha(active && !muted ? dc : DIM, active ? 1.0f : 0.5f), active ? b : "--");
@@ -1164,7 +1186,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
     /* ---------------- digi channel */
     float dy = vy + vh + M, dh = 96;
     draw_digi(ax, dy, aw, dh, vs);
-    if (clicked(ax, dy, aw, dh)) { g_mute ^= 8u; if (g_tune) ngsid_set_voice_mute(g_tune->s, g_mute); click = 0; }
+    if (clicked(ax, dy, aw, dh)) { int ds = digi_source(vs); g_mute ^= ds >= 0 ? 1u << ds : 8u; if (g_tune) ngsid_set_voice_mute(g_tune->s, g_mute); click = 0; }
 
     /* ---------------- SID strip (filter, volume) */
     float fy = dy + dh + M, fh = 46;
@@ -1474,7 +1496,9 @@ int main(int argc, char **argv) {
                     if (g_tune) ngsid_set_digi_gain(g_tune->s, g_cfg.digi_gain);
                     break;
                 case SDLK_1: case SDLK_2: case SDLK_3: case SDLK_4:
-                    g_mute ^= 1u << (e.key.keysym.sym - SDLK_1);
+                    { unsigned bit = (unsigned)(e.key.keysym.sym - SDLK_1);
+                      if (bit == 3) { int ds = digi_source(&g_vis); if (ds >= 0) bit = (unsigned)ds; }
+                      g_mute ^= 1u << bit; }
                     if (g_tune) ngsid_set_voice_mute(g_tune->s, g_mute);
                     break;
                 case SDLK_PLUS: case SDLK_KP_PLUS: case SDLK_EQUALS: g_vol += 0.05f; if (g_vol > 1) g_vol = 1; break;

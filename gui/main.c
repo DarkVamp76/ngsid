@@ -13,11 +13,12 @@
  *       click the playlist, drag the volume bar. Drop .sid files or folders onto the window.
  *
  * Options: --pal | --ntsc, --rate N, --exact-clock, --limiter | --no-limiter, --digi-wrap,
- *          --filter-clamp, --no-vol-burst, --digi-gain N, --vbi, -s song,
+ *          --filter-clamp, --no-vol-burst, --digi-gain N, -s song,
  *          --screenshot out.bmp [--frames N]   (render N frames, save, quit; for testing)
  */
 #define _DEFAULT_SOURCE
 #include "../psid.h"
+#include "../lsp/engine.h"
 #include "font_data.h"
 #include "hvsc.h"
 
@@ -318,9 +319,8 @@ static const col WARN = { 1.0f, 0.45f, 0.35f, 1 };
 typedef struct {
     uint8_t *buf;
     psid_info info;
-    ngsid *s;
-    c64 *m;
-    psid_player *p;
+    engine *e;
+    ngsid *s;               /* synth of the engine, valid as long as e */
     int song, pal;
 } tune_t;
 
@@ -356,14 +356,14 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
     int frames = len / 4;
     while (frames > 0) {
         tune_t *t = g_tune;
-        if (!t || !t->p || g_paused || psid_player_error(t->p)) {
+        if (!t || !t->e || g_paused || engine_error(t->e)) {
             memset(out, 0, (size_t)frames * 4);
             g_vis.running = 0;
             return;
         }
         if (pos >= have) {
             uint8_t raw[NGSID_BLOCK * 2];
-            size_t n = ngsid_render(t->s, raw, NGSID_BLOCK);
+            size_t n = engine_render(t->e, raw, NGSID_BLOCK);
             have = (int)n;
             pos = 0;
             float gain = 128.0f * g_vol * 1.25f;
@@ -403,9 +403,7 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
 
 static void tune_free(tune_t *t) {
     if (!t) return;
-    if (t->p) psid_player_destroy(t->p);
-    if (t->m) c64_destroy(t->m);
-    if (t->s) ngsid_destroy(t->s);
+    if (t->e) engine_destroy(t->e);
     free(t->buf);
     free(t);
 }
@@ -429,14 +427,16 @@ static int tune_load(const char *path, int song, tune_t **out_info) {
     t->pal = g_pal_override >= 0 ? g_pal_override : (t->info.clock == 2 ? 0 : 1);
     ngsid_config cfg = g_cfg;
     cfg.pal = t->pal; cfg.stereo = 1; cfg.sample_rate = g_rate;
-    t->s = ngsid_create(&cfg);
-    t->m = c64_create(t->s, t->pal);
-    if (t->m) t->m->no_vol_burst = g_no_burst;
-    if (!t->s || !t->m) { snprintf(g_error, sizeof g_error, "out of memory"); tune_free(t); return -1; }
-    ngsid_set_voice_mute(t->s, g_mute);
-    t->p = psid_player_create(t->m, t->s, &t->info, song, g_rate, &rc);
-    if (!t->p) {
-        snprintf(g_error, sizeof g_error, "init: %s", psid_strerror(rc));
+    engine_opts eo;
+    eo.pal_override = g_pal_override;
+    eo.no_vol_burst = g_no_burst;
+    char emsg[160] = "";
+    t->e = engine_create(t->buf, (size_t)len, song, g_rate, &cfg, &eo, emsg, sizeof emsg);
+    if (t->e) {
+        t->s = engine_synth(t->e);
+        ngsid_set_voice_mute(t->s, g_mute);
+    } else {
+        snprintf(g_error, sizeof g_error, "init: %s", emsg);
         /* keep the header data for display, but nothing to play */
     }
     if (g_dev) SDL_LockAudioDevice(g_dev);
@@ -446,7 +446,7 @@ static int tune_load(const char *path, int song, tune_t **out_info) {
     if (g_dev) SDL_UnlockAudioDevice(g_dev);
     tune_free(old);
     (void)out_info;
-    return t->p ? 0 : -1;
+    return t->e ? 0 : -1;
 }
 
 /* ================================================================== playlist */
@@ -1039,7 +1039,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             snprintf(sub, sizeof sub, "%s%s%s", tn->info.author, tn->info.released[0] ? "  \xb7  " : "", tn->info.released);
         } else {
             snprintf(title, sizeof title, "ngSid");
-            snprintf(sub, sizeof sub, "SID-Player  \xb7  basiert auf VacSid von Oliver Blasnik");
+            snprintf(sub, sizeof sub, "SID player  \xb7  based on VacSid by Oliver Blasnik");
         }
         float tsize = 32;
         while (tsize > 18 && text_width(title, tsize) > aw - 220) tsize -= 2;
@@ -1060,7 +1060,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             snprintf(b, sizeof b, "PLAY $%04X", tn->info.play);
             cx += chip(cx, cy, b, DIM, 0);
             if (tn->info.sid2) {
-                snprintf(b, sizeof b, "2. SID $%04X (stumm)", tn->info.sid2);
+                snprintf(b, sizeof b, "2. SID $%04X (muted)", tn->info.sid2);
                 cx += chip(cx, cy, b, WARN, 1);
             }
         }
@@ -1277,13 +1277,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--filter-clamp")) g_cfg.filter_clamp = 1;
         else if (!strcmp(argv[i], "--no-vol-burst")) g_no_burst = 1;
         else if (!strcmp(argv[i], "--digi-gain") && i + 1 < argc) g_cfg.digi_gain = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--vbi")) psid_force_vbi = 1;
         else if (!strcmp(argv[i], "-s") && i + 1 < argc) first_song = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) shot_frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             printf("usage: %s [--pal|--ntsc] [--rate N] [--exact-clock] [--limiter|--no-limiter] [--digi-wrap]\n"
-                   "       [--filter-clamp] [--no-vol-burst] [--digi-gain N] [--vbi] [-s song]\n"
+                   "       [--filter-clamp] [--no-vol-burst] [--digi-gain N] [-s song]\n"
                    "       [--screenshot out.bmp [--frames N]] [file.sid|dir ...]\n", argv[0]);
             return 0;
         } else if (argv[i][0] == '-' && argv[i][1]) { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }

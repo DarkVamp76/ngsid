@@ -97,6 +97,9 @@ const uint8_t *ngsid_voice_wave(const ngsid *s, int voice);
 const uint8_t *ngsid_digi_wave(const ngsid *s);              /* last rendered digi block, NGSID_BLOCK entries (0 = silent) */
 uint8_t ngsid_shadow_reg(const ngsid *s, unsigned reg);     /* last value written to reg 0..0x18 */
 void ngsid_set_vol_mod(ngsid *s, int active, unsigned nibble); /* per-sample voice volume (fast $D418 bursts) */
+/* Hold the DAC level of a voice whose waveform was switched off (test-bit / waveform-switching digis):
+ * while on, the voice outputs `wave` (8 bit, before the envelope) instead of the oscillator. */
+void ngsid_set_hold(ngsid *s, int voice, int on, uint8_t wave);
 void ngsid_set_digi_gain(ngsid *s, int percent);            /* live change of cfg.digi_gain */
 void ngsid_set_voice_mute(ngsid *s, unsigned mask);         /* bit n set = voice n silent, bit 3 = digi channel */
 

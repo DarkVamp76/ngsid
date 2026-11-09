@@ -1438,6 +1438,15 @@ int main(int argc, char **argv) {
     if (!g_dev) fprintf(stderr, "audio: %s (continuing without sound)\n", SDL_GetError());
     else SDL_PauseAudioDevice(g_dev, 0);
 
+    if (!npl && !shot) {   /* nothing given: look for SID files in ~/Musik, then ~/Music */
+        const char *home = getenv("HOME");
+        static const char *const dirs[] = { "Musik", "Music" };
+        for (int i = 0; home && *home && i < 2 && !npl; i++) {
+            char dir[1024];
+            snprintf(dir, sizeof dir, "%s/%s", home, dirs[i]);
+            add_path(dir, 0);
+        }
+    }
     if (npl) play_index(0, first_song);
     else if (!shot) browse_open();   /* nothing given: start in the online HVSC browser */
 

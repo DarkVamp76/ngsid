@@ -63,7 +63,7 @@ $(OBJ_DIR)/version.h: FORCE | $(OBJ_DIR)
 
 FORCE:
 
-$(OBJ_DIR)/main.o: gui/main.c gui/font_data.h gui/hvsc.h psid.h ngsid.h lsp/engine.h $(OBJ_DIR)/version.h | $(OBJ_DIR)
+$(OBJ_DIR)/main.o: gui/main.c gui/font_data.h gui/icon_data.h gui/hvsc.h psid.h ngsid.h lsp/engine.h $(OBJ_DIR)/version.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -I. -Igui -I$(OBJ_DIR) $$(pkg-config --cflags sdl2) -c -o $@ gui/main.c
 
 $(OBJ_DIR)/hvsc.o: gui/hvsc.c gui/hvsc.h | $(OBJ_DIR)
@@ -89,6 +89,11 @@ install: ngSid
 	for n in 32 48 64 128 256 512; do \
 		install -Dm644 packaging/icons/ngsid-$$n.png $(DESTDIR)$(PREFIX)/share/icons/hicolor/$${n}x$${n}/apps/ngsid.png; \
 	done
+	install -Dm644 packaging/ngsid.metainfo.xml $(DESTDIR)$(PREFIX)/share/metainfo/ngsid.metainfo.xml
+ifeq ($(DESTDIR),)
+	-gtk-update-icon-cache -q -t -f $(PREFIX)/share/icons/hicolor 2>/dev/null
+	-update-desktop-database -q $(PREFIX)/share/applications 2>/dev/null
+endif
 
 # ---- self-tests (no SDL2 needed) -----------------------------------------------------------
 ngsid_test: tests/test_synth.c ngsid.c ngsid.h

@@ -20,6 +20,7 @@
 #include "../psid.h"
 #include "../lsp/engine.h"
 #include "font_data.h"
+#include "icon_data.h"
 #include "hvsc.h"
 #include "version.h"
 
@@ -736,6 +737,7 @@ static float band[NBANDS], bandpk[NBANDS], bandhold[NBANDS];
 static float vu[2], vupk[2], vuhold[2];
 static float scope_amp[3] = { 60, 60, 60 };
 static float glow[3];
+static float g_beat;    /* 1 at a detected beat, decays quickly: drives the pulse of the SID graphic */
 
 static void analyse(const vis_t *v, float dt) {
     static double re[2048], im[2048], win[2048];
@@ -767,6 +769,23 @@ static void analyse(const vis_t *v, float dt) {
         if (band[b] >= bandpk[b]) { bandpk[b] = band[b]; bandhold[b] = 0.45f; }
         else if (bandhold[b] > 0) bandhold[b] -= dt;
         else { bandpk[b] -= dt * 0.55f; if (bandpk[b] < band[b]) bandpk[b] = band[b]; }
+    }
+    {   /* beat: the bass or the hi-hat/noise range jumps above its own running average (drum hits) */
+        static float slow[2], last[2], since = 1;
+        float e[2] = { 0, 0 };
+        int lo1 = (int)(220.0 / binhz) + 1, h0 = (int)(3500.0 / binhz), h1 = (int)(12000.0 / binhz);
+        for (int i = 1; i <= lo1; i++) e[0] += mag[i] * mag[i];
+        for (int i = h0; i <= h1; i++) e[1] += mag[i] * mag[i];
+        e[0] = sqrtf(e[0]); e[1] = sqrtf(e[1]);
+        since += dt;
+        int hit = 0;
+        for (int k = 0; k < 2; k++) {
+            if (e[k] > 1.5f * slow[k] + 0.006f && e[k] > 1.10f * last[k]) hit = 1;
+            slow[k] += (e[k] - slow[k]) * (1.0f - expf(-dt / 0.40f));
+            last[k] = e[k];
+        }
+        if (hit && since > 0.11f) { g_beat = 1; since = 0; }
+        g_beat *= expf(-dt * 7.0f);
     }
     for (int c = 0; c < 2; c++) {
         float db = 20.0f * log10f(v->peak[c] + 1e-6f);
@@ -804,7 +823,11 @@ static float chip(float x, float y, const char *label, col c, int lit) {
 /* ---- the SID chip graphic (DIP-28) for the header: variant per model, glow follows the level */
 static float chip_w(const char *label) { return text_width(label, 12) + 14 + 5; }
 
-static void draw_sid(float x, float y, float w, int model, float lvl) {
+static void draw_sid(float x, float y, float w, int model, float lvl, float beat) {
+    {   /* grow a little on the beat, around the centre */
+        float k = 1.0f + 0.07f * beat, nw = w * k;
+        x -= (nw - w) / 2; y -= (nw - w) * 0.4f / 2; w = nw;
+    }
     const int m8580 = model == 8580;
     const float h = w * 0.40f, pitch = w * 0.94f / 14.0f, pw = pitch * 0.42f;
     const float bx = x, by = y + h * 0.13f, bw = w, bh = h * 0.74f;
@@ -813,14 +836,15 @@ static void draw_sid(float x, float y, float w, int model, float lvl) {
     const col label = m8580 ? C(0.80f, 0.89f, 1.0f, 1) : C(0.93f, 0.83f, 0.64f, 1);
 
     set_additive(1);
-    blob(x + w / 2, y + h / 2, w * 0.30f, alpha(accent, 0.10f + 0.38f * lvl));
+    blob(x + w / 2, y + h / 2, w * (0.30f + 0.12f * beat), alpha(accent, 0.10f + 0.30f * lvl + 0.55f * beat));
     set_additive(0);
 
     shadow(bx, by + 3, bw, bh, 4, 9, C(0, 0, 0, 0.65f));
     for (int i = 0; i < 14; i++) {                       /* legs: tin plated, both long sides */
         float px = x + pitch * 0.55f + pitch * (float)i;
-        rect_grad(px, y, pw, h * 0.22f, C(0.86f, 0.87f, 0.90f, 1), C(0.50f, 0.51f, 0.55f, 1));
-        rect_grad(px, y + h * 0.78f, pw, h * 0.22f, C(0.50f, 0.51f, 0.55f, 1), C(0.86f, 0.87f, 0.90f, 1));
+        col pa = mix(C(0.86f, 0.87f, 0.90f, 1), accent, 0.55f * beat), pb = mix(C(0.50f, 0.51f, 0.55f, 1), accent, 0.35f * beat);
+        rect_grad(px, y, pw, h * 0.22f, pa, pb);
+        rect_grad(px, y + h * 0.78f, pw, h * 0.22f, pb, pa);
     }
     rrect(bx, by, bw, bh, 3.5f, C(0.30f, 0.30f, 0.34f, 1));            /* bevelled edge */
     rrect(bx + 1, by + 1, bw - 2, bh - 2, 3, body);
@@ -840,7 +864,7 @@ static void draw_sid(float x, float y, float w, int model, float lvl) {
     float tx = bx + bw * 0.17f;
     int sub = w >= 150;
     float ty = by + bh * (sub ? 0.20f : 0.34f);
-    text(tx, ty, fs, alpha(label, 0.93f), l1);
+    text(tx, ty, fs, alpha(mix(label, C(1, 1, 1, 1), 0.5f * beat), 0.93f), l1);
     if (sub) {
         float f2 = bh * 0.125f;
         text(tx, ty + fs * 1.28f, f2, alpha(label, 0.55f), "SOUND INTERFACE DEVICE");
@@ -1242,7 +1266,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             float ch = cwid * 0.40f, y0 = hy + (cwid > 150 ? 12 : 16);   /* small chips end above the tag row */
             if (cwid > 150 && ch > hh - 26) ch = hh - 26;
             for (int i = 0; i < nch; i++)
-                draw_sid(chipL + (cwid + cgap) * (float)i, y0, cwid, tn->model[i], lvl);
+                draw_sid(chipL + (cwid + cgap) * (float)i, y0, cwid, tn->model[i], lvl, g_paused ? 0.0f : g_beat);
         }
         if (g_error[0]) text(ax + 22, hy + hh - 54, 13, WARN, g_error);
         /* time + song */
@@ -1464,6 +1488,10 @@ int main(int argc, char **argv) {
         else add_path(argv[i], 0);
     }
 
+    /* desktop integration: the Wayland app id must match ngsid.desktop (KDE takes the icon from it),
+     * the X11 class matches StartupWMClass; unknown hints are ignored by older SDL versions */
+    SDL_SetHint("SDL_APP_ID", "ngsid");
+    SDL_SetHint("SDL_VIDEO_X11_WMCLASS", "ngSid");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
@@ -1473,6 +1501,11 @@ int main(int argc, char **argv) {
                                        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (!win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
     SDL_SetWindowMinimumSize(win, 900, 600);
+    {
+        SDL_Surface *ic = SDL_CreateRGBSurfaceWithFormatFrom((void *)icon_rgba, ICON_W, ICON_H, 32, ICON_W * 4,
+                                                             SDL_PIXELFORMAT_RGBA32);
+        if (ic) { SDL_SetWindowIcon(win, ic); SDL_FreeSurface(ic); }
+    }
     if (!shot) update_check_start();
     SDL_GLContext ctx = SDL_GL_CreateContext(win);
     if (!ctx) { fprintf(stderr, "OpenGL 3.3 context: %s\n", SDL_GetError()); return 1; }

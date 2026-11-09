@@ -11,10 +11,10 @@ static const int LAG = NGSID_BLOCK;     /* frames of delay between machine time 
 
 const char *NgSid::getCredits()
 {
-    return "ngSid engine:\n\tVacSid style synthesis after Oliver Blasnik (R0M/Vacuum)\n";
+    return "ngSid chip: reSIDfp sound; displays driven by the ngSid synth (after VacSid by Oliver Blasnik)\n";
 }
 
-NgSid::NgSid(sidbuilder *builder) : sidemu(builder)
+NgSid::NgSid(sidbuilder *builder) : sidemu(builder), m_aud(new ReSIDfp(builder))
 {
     ngsid_config_default(&m_cfg);
     m_cfg.stereo = 1;
@@ -26,8 +26,28 @@ NgSid::NgSid(sidbuilder *builder) : sidemu(builder)
 NgSid::~NgSid()
 {
     ngsid_destroy(m_s);
-    delete[] m_buffer;
-    delete[] m_bufferR;
+    delete m_aud;           /* owns the sample buffer */
+    m_buffer = nullptr;
+}
+
+bool NgSid::lock(EventScheduler *scheduler)
+{
+    if (!sidemu::lock(scheduler)) return false;
+    m_aud->lock(scheduler);
+    return true;
+}
+
+void NgSid::unlock()
+{
+    m_aud->unlock();
+    sidemu::unlock();
+}
+
+/* hand the shared sample position to the reSIDfp chip and take it back after the call */
+void NgSid::audSync()
+{
+    m_bufferpos = m_aud->bufferpos();
+    m_buffer = m_aud->buffer();
 }
 
 void NgSid::rebuild()
@@ -85,6 +105,8 @@ void NgSid::queue(uint64_t sample, uint8_t kind, uint8_t reg, uint32_t val)
 
 void NgSid::reset(uint8_t volume)
 {
+    m_aud->reset(volume);
+    audSync();
     m_accessClk = 0;
     m_ops.clear();
     m_fifo.assign((size_t)LAG * 2, 0);
@@ -126,16 +148,21 @@ void NgSid::checkBurstEnd(event_clock_t t)
 
 uint8_t NgSid::read(uint_least8_t addr)
 {
-    clock();
-    if (addr == 0x1B || addr == 0x1C) return ngsid_read(m_s, addr);
-    return 0xFF;
+    visClock();
+    m_aud->bufferpos(m_bufferpos);
+    const uint8_t v = m_aud->read(addr);
+    audSync();
+    return v;
 }
 
 void NgSid::write(uint_least8_t addr, uint8_t data)
 {
     if (!m_t0Set) { m_t0 = now(); m_t0Set = true; }
     const event_clock_t t = now();
-    clock();
+    m_aud->bufferpos(m_bufferpos);
+    m_aud->write(addr, data);
+    audSync();
+    visClock();
     checkBurstEnd(t);
     const uint64_t at = sampleOf(t);
 
@@ -234,6 +261,15 @@ void NgSid::voiceWrite(unsigned addr, uint8_t data, event_clock_t t, uint64_t at
 void NgSid::clock()
 {
     if (!eventScheduler) return;
+    m_aud->bufferpos(m_bufferpos);
+    m_aud->clock();
+    audSync();
+    visClock();
+}
+
+void NgSid::visClock()
+{
+    if (!eventScheduler) return;
     if (!m_t0Set) { m_t0 = now(); m_t0Set = true; }
     const event_clock_t t = now();
     checkBurstEnd(t);
@@ -242,42 +278,32 @@ void NgSid::clock()
     /* a block may only be rendered once every write that falls into it has been queued */
     while (m_rendered + NGSID_BLOCK <= upto) renderBlock();
 
-    if (!m_buffer) return;
-    uint64_t avail = upto > m_served ? upto - m_served : 0;
-    uint64_t room = (uint64_t)(m_buffersize - m_bufferpos);
-    uint64_t n = avail < room ? avail : room;
-    for (uint64_t i = 0; i < n; i++)
-    {
-        const uint8_t l = m_fifo.front(); m_fifo.pop_front();
-        const uint8_t r = m_fifo.front(); m_fifo.pop_front();
-        m_buffer[m_bufferpos + i] = l;
-        m_bufferR[m_bufferpos + i] = r;
-    }
-    m_bufferpos += (int)n;
+    /* the synth's own audio is not used: drop what the machine time has passed */
+    uint64_t n = upto > m_served ? upto - m_served : 0;
+    if (n > m_fifo.size() / 2) n = m_fifo.size() / 2;
+    m_fifo.erase(m_fifo.begin(), m_fifo.begin() + (std::ptrdiff_t)(n * 2));
     m_served += n;
 }
 
-void NgSid::sampling(float systemclock, float freq, SidConfig::sampling_method_t, bool)
+void NgSid::sampling(float systemclock, float freq, SidConfig::sampling_method_t method, bool fast)
 {
     m_clk = systemclock;
     m_rate = freq;
     m_haveClock = true;
     m_cfg.sample_rate = (int)freq;
     m_cfg.pal = systemclock < 1000000.0f ? 1 : 0;
+    m_aud->sampling(systemclock, freq, method, fast);
     rebuild();
     reset(0);
-
-    delete[] m_buffer;
-    delete[] m_bufferR;
-    m_buffersize = (int)std::ceil((freq / 1000.f) * 20.f);
-    m_buffer = new short[m_buffersize];
-    m_bufferR = new short[m_buffersize];
-    m_status = m_s != nullptr;
+    m_status = m_s != nullptr && m_aud->getStatus();
+    if (!m_aud->getStatus()) m_error = m_aud->error();
 }
 
-void NgSid::model(SidConfig::sid_model_t, bool)
+void NgSid::model(SidConfig::sid_model_t model, bool digiboost)
 {
-    m_status = m_s != nullptr;      /* one synth model only, as VacSid */
+    m_aud->model(model, digiboost);
+    m_status = m_s != nullptr && m_aud->getStatus();
+    if (!m_aud->getStatus()) m_error = m_aud->error();
 }
 
 }

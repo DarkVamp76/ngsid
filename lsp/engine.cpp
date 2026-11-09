@@ -12,13 +12,11 @@
 #include <cstring>
 #include <string>
 #include <vector>
-#include <deque>
 
 struct engine {
     sidplayfp player;
     NgSidBuilder *builder = nullptr;
     SidTune *tune = nullptr;
-    std::deque<uint8_t> carry;     /* rendered samples not yet handed out (L,R pairs) */
     int rate = 44100;
     std::string error;
     bool failed = false;
@@ -35,7 +33,6 @@ engine *engine_create(const uint8_t *buf, size_t len, int song, int rate, const 
     engine *e = new engine;
     e->builder = new NgSidBuilder("ngSid");
     if (cfg) e->builder->setConfig(*cfg);
-    if (opts) e->builder->setNoVolBurst(opts->no_vol_burst != 0);
 
     if (e->builder->create(e->player.info().maxsids()) == 0)
     {
@@ -43,8 +40,6 @@ engine *engine_create(const uint8_t *buf, size_t len, int song, int rate, const 
         engine_destroy(e);
         return fail(m.c_str());
     }
-    if (opts) e->builder->setNoVolBurst(opts->no_vol_burst != 0);
-
     e->rate = rate;
     e->tune = new SidTune(buf, (uint_least32_t)len);
     if (!e->tune->getStatus())
@@ -61,6 +56,12 @@ engine *engine_create(const uint8_t *buf, size_t len, int song, int rate, const 
     c.samplingMethod = SidConfig::INTERPOLATE;
     c.fastSampling = false;
     c.sidEmulation = e->builder;
+    c.defaultSidModel = SidConfig::MOS6581;     /* a tune header can ask for the 8580 */
+    if (opts && opts->sid_model >= 0)
+    {
+        c.forceSidModel = true;
+        c.defaultSidModel = opts->sid_model ? SidConfig::MOS8580 : SidConfig::MOS6581;
+    }
     if (opts && opts->pal_override >= 0)
     {
         c.forceC64Model = true;
@@ -82,7 +83,6 @@ engine *engine_create(const uint8_t *buf, size_t len, int song, int rate, const 
         engine_destroy(e);
         return fail(m.c_str());
     }
-    if (opts) e->builder->setNoVolBurst(opts->no_vol_burst != 0);
     return e;
 }
 
@@ -94,43 +94,44 @@ void engine_destroy(engine *e)
     delete e;
 }
 
-size_t engine_render(engine *e, uint8_t *raw, size_t frames)
+/* the mixing of several chips into stereo is done by the library; this call is deprecated
+ * upstream in favour of per-chip buffers, but it is the one that mixes for us */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+size_t engine_render(engine *e, int16_t *out, size_t frames)
 {
-    if (e->failed) { memset(raw, 0, frames * 2); return frames; }
-    libsidplayfp::NgSid *chip = e->builder->chip();
-    const double cps = e->builder->clockHz() / (double)e->rate;
+    if (e->failed) { memset(out, 0, frames * 4); return frames; }
     size_t done = 0;
     int idle = 0;
-    while (done < frames && chip)
+    while (done < frames)
     {
-        /* samples left over from the previous call come first */
-        while (done < frames && !e->carry.empty())
+        const unsigned want = (unsigned)((frames - done) * 2);
+        const unsigned n = e->player.play((short *)(out + done * 2), want);
+        if (n == 0)
         {
-            raw[done * 2] = e->carry.front(); e->carry.pop_front();
-            raw[done * 2 + 1] = e->carry.front(); e->carry.pop_front();
-            done++;
+            if (++idle > 100)
+            {
+                e->failed = true;
+                e->error = e->player.error();
+                if (e->error.empty()) e->error = "playback stopped";
+                break;
+            }
+            continue;
         }
-        if (done >= frames) break;
-        unsigned cycles = (unsigned)((double)(frames - done) * cps) + 1u;
-        if (cycles > 20000u) cycles = 20000u;
-        const int n = e->player.play(cycles);
-        if (n < 0)
-        {
-            e->failed = true;
-            e->error = e->player.error();
-            if (e->error.empty()) e->error = "playback stopped";
-            break;
-        }
-        const short *L = chip->buffer(), *R = chip->bufferR();
-        for (int i = 0; i < n; i++)
-        {
-            e->carry.push_back((uint8_t)(L[i] < 0 ? 0 : (L[i] > 255 ? 255 : L[i])));
-            e->carry.push_back((uint8_t)(R[i] < 0 ? 0 : (R[i] > 255 ? 255 : R[i])));
-        }
-        if (n == 0 && ++idle > 1000) break;
+        done += n / 2;
     }
-    if (done < frames) memset(raw + done * 2, 0, (frames - done) * 2);
+    if (done < frames) memset(out + done * 2, 0, (frames - done) * 4);
     return frames;
+}
+#pragma GCC diagnostic pop
+
+void engine_mute(engine *e, unsigned mask)
+{
+    for (unsigned n = 0; n < e->builder->count(); n++)
+    {
+        libsidplayfp::NgSid *c = e->builder->chipAt(n);
+        for (unsigned v = 0; v < 4; v++) c->voice(v, (mask >> v) & 1u);
+    }
 }
 
 ngsid *engine_synth(engine *e) { return e->builder->synth(); }

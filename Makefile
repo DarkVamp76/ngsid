@@ -18,7 +18,7 @@ LSP_TAR    = third_party/libsidplayfp-$(LSP_VER).tar.gz
 LSP_SRC    = third_party/libsidplayfp-$(LSP_VER)
 LSP_BUILD  = third_party/build
 LSP_LIB    = $(LSP_BUILD)/src/.libs/libsidplayfp.a
-LSP_INC    = -I$(LSP_SRC)/src -I$(LSP_BUILD)/src -I$(LSP_BUILD) -I$(LSP_SRC)/src/sidplayfp -I$(LSP_BUILD)/src/sidplayfp -DHAVE_CONFIG_H
+LSP_INC    = -I$(LSP_SRC)/src -I$(LSP_BUILD)/src -I$(LSP_BUILD) -I$(LSP_SRC)/src/sidplayfp -I$(LSP_BUILD)/src/sidplayfp -I$(LSP_SRC)/src/builders/residfp-builder -I$(LSP_BUILD)/src/builders/residfp-builder/residfp -I$(LSP_SRC)/src/builders/residfp-builder/residfp -DHAVE_CONFIG_H
 
 OBJ_DIR  = build
 SYNTH    = $(OBJ_DIR)/ngsid.o

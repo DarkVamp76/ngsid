@@ -30,15 +30,15 @@ static size_t make_image(uint8_t *img, int rsid, unsigned init, unsigned play, c
 
 static double play_rms(const uint8_t *img, size_t len, double secs, int *peak, const char **err) {
     ngsid_config cfg; ngsid_config_default(&cfg);
-    engine_opts o = { -1, 0 };
+    engine_opts o = { -1, -1 };
     char msg[160];
     engine *e = engine_create(img, len, 1, 44100, &cfg, &o, msg, sizeof msg);
     if (!e) { printf("    create failed: %s\n", msg); *err = "create"; return -1; }
-    uint8_t raw[2048];
+    int16_t raw[2048];
     double sum = 0, sq = 0; long cnt = 0; int pk = 0;
     for (int k = 0; k < (int)(secs * 44100 / 1024); k++) {
         engine_render(e, raw, 1024);
-        for (int i = 0; i < 2048; i += 2) { sum += raw[i]; sq += (double)raw[i] * raw[i]; cnt++; if (raw[i] > pk) pk = raw[i]; }
+        for (int i = 0; i < 2048; i += 2) { sum += raw[i]; sq += (double)raw[i] * raw[i]; cnt++; int a = raw[i] < 0 ? -raw[i] : raw[i]; if (a > pk) pk = a; }
     }
     *err = engine_error(e);
     double m = sum / (double)cnt, v = sq / (double)cnt - m * m;

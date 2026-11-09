@@ -1218,7 +1218,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
         rx -= text_right(rx, cy, 14, TXT, b);
         text_right(rx - 8, cy + 1, 12, DIM, "SID VOL");
         snprintf(b, sizeof b, "DIGI %d%%  ( [ / ] )", g_cfg.digi_gain);
-        text_right(rx - 100, cy + 1, 12, g_cfg.digi_gain == 100 ? DIM : VC[2], b);
+        text_right(rx - 100, cy + 1, 12, g_cfg.digi_gain == 60 ? DIM : VC[2], b);
     }
 
     /* ---------------- spectrum + VU */

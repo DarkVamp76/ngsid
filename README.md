@@ -65,7 +65,7 @@ Options:
 | `--no-vol-burst` | disable detection of volume-register digi bursts |
 | `--no-update-check` | do not ask GitHub for a newer release at startup |
 | `--version` | print the version and quit |
-| `--digi-gain N` | digi level in percent |
+| `--digi-gain N` | digi level in percent (default 60) |
 | `--digi-wrap` | 8-bit wrap-around of the digi sum (not recommended) |
 | `--filter-clamp` | clamp filter overflow instead of wrapping |
 

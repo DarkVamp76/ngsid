@@ -48,7 +48,7 @@ typedef struct ngsid_config {
     int digi_wrap;        /* 1 = authentic VacSid digi scaling: 8-bit multiply, digi values
                              above 255 (volume > 8 with high nibbles) wrap around and crackle;
                              0 = full 16-bit multiply (default)                 */
-    int digi_gain;        /* digi (sample) level in percent, 100 = as computed (default) */
+    int digi_gain;        /* digi (sample) level in percent, 100 = as computed, 60 = default */
     int digi_lp;          /* one-pole low-pass on the digi channel in Hz, 0 = off (default) */
     int filter_clamp;     /* 1 = saturate filter overflow instead of the original's
                              wrap-around negate (default 0 = original behaviour) */

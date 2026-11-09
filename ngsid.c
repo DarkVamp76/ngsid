@@ -442,7 +442,7 @@ void ngsid_config_default(ngsid_config *c) {
     c->limiter = 2;
     c->filter_fallback = 1;
     c->digi_wrap = 0;
-    c->digi_gain = 100;
+    c->digi_gain = 60;
     c->digi_lp = 0;
 }
 

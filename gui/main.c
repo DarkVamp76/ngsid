@@ -323,6 +323,7 @@ typedef struct {
     engine *e;
     ngsid *s;               /* synth of the engine, valid as long as e */
     int song, pal;
+    int nsid, model[3];     /* chips in use and the model each runs as (6581/8580) */
 } tune_t;
 
 typedef struct {
@@ -436,6 +437,9 @@ static int tune_load(const char *path, int song, tune_t **out_info) {
     t->e = engine_create(t->buf, (size_t)len, song, g_rate, &cfg, &eo, emsg, sizeof emsg);
     if (t->e) {
         t->s = engine_synth(t->e);
+        t->nsid = (int)engine_sid_count(t->e);
+        if (t->nsid > 3) t->nsid = 3;
+        for (int i = 0; i < t->nsid; i++) t->model[i] = engine_sid_model(t->e, (unsigned)i);
         ngsid_set_voice_mute(t->s, g_mute);
         engine_mute(t->e, g_mute);
     } else {
@@ -797,6 +801,52 @@ static float chip(float x, float y, const char *label, col c, int lit) {
     return w + 5;
 }
 
+/* ---- the SID chip graphic (DIP-28) for the header: variant per model, glow follows the level */
+static float chip_w(const char *label) { return text_width(label, 12) + 14 + 5; }
+
+static void draw_sid(float x, float y, float w, int model, float lvl) {
+    const int m8580 = model == 8580;
+    const float h = w * 0.40f, pitch = w * 0.94f / 14.0f, pw = pitch * 0.42f;
+    const float bx = x, by = y + h * 0.13f, bw = w, bh = h * 0.74f;
+    const col accent = m8580 ? C(0.35f, 0.82f, 1.0f, 1) : C(1.0f, 0.62f, 0.28f, 1);
+    const col body = m8580 ? C(0.075f, 0.085f, 0.105f, 1) : C(0.105f, 0.092f, 0.088f, 1);
+    const col label = m8580 ? C(0.80f, 0.89f, 1.0f, 1) : C(0.93f, 0.83f, 0.64f, 1);
+
+    set_additive(1);
+    blob(x + w / 2, y + h / 2, w * 0.30f, alpha(accent, 0.10f + 0.38f * lvl));
+    set_additive(0);
+
+    shadow(bx, by + 3, bw, bh, 4, 9, C(0, 0, 0, 0.65f));
+    for (int i = 0; i < 14; i++) {                       /* legs: tin plated, both long sides */
+        float px = x + pitch * 0.55f + pitch * (float)i;
+        rect_grad(px, y, pw, h * 0.22f, C(0.86f, 0.87f, 0.90f, 1), C(0.50f, 0.51f, 0.55f, 1));
+        rect_grad(px, y + h * 0.78f, pw, h * 0.22f, C(0.50f, 0.51f, 0.55f, 1), C(0.86f, 0.87f, 0.90f, 1));
+    }
+    rrect(bx, by, bw, bh, 3.5f, C(0.30f, 0.30f, 0.34f, 1));            /* bevelled edge */
+    rrect(bx + 1, by + 1, bw - 2, bh - 2, 3, body);
+    rect_grad(bx + 4, by + 2, bw - 8, bh * 0.40f, C(1, 1, 1, 0.075f), C(1, 1, 1, 0));
+    rect_grad(bx + 4, by + bh * 0.70f, bw - 8, bh * 0.28f, C(0, 0, 0, 0), C(0, 0, 0, 0.22f));
+
+    float r = bh * 0.15f, dx = bx + bw * 0.075f, dy = by + bh * 0.5f;    /* moulded dimple */
+    rrect(dx - r, dy - r, r * 2, r * 2, r, C(0, 0, 0, 0.45f));
+    rrect(dx - r * 0.8f, dy - r * 0.8f, r * 1.6f, r * 1.6f, r * 0.8f, alpha(body, 1));
+    float pr = bh * 0.045f;                                              /* pin 1 marker */
+    rrect(bx + bw * 0.045f, by + bh - bh * 0.16f, pr * 2, pr * 2, pr, C(0, 0, 0, 0.5f));
+
+    char l1[24];
+    snprintf(l1, sizeof l1, m8580 ? "CSG 8580R5" : "MOS 6581R4");
+    float fs = bh * 0.27f, avail = bw * 0.74f;
+    while (fs > 7 && text_width(l1, fs) > avail) fs -= 0.5f;
+    float tx = bx + bw * 0.17f;
+    int sub = w >= 150;
+    float ty = by + bh * (sub ? 0.20f : 0.34f);
+    text(tx, ty, fs, alpha(label, 0.93f), l1);
+    if (sub) {
+        float f2 = bh * 0.125f;
+        text(tx, ty + fs * 1.28f, f2, alpha(label, 0.55f), "SOUND INTERFACE DEVICE");
+    }
+}
+
 static void card(float x, float y, float w, float h, int hover) {
     shadow(x, y + 6, w, h, 14, 22, C(0, 0, 0, 0.5f));
     rrect(x, y, w, h, 14, alpha(EDGE, hover ? 0.75f : 0.45f));
@@ -1136,28 +1186,63 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             snprintf(title, sizeof title, "ngSid");
             snprintf(sub, sizeof sub, "SID player  \xb7  based on VacSid by Oliver Blasnik");
         }
-        float tsize = 32;
-        while (tsize > 18 && text_width(title, tsize) > aw - 220) tsize -= 2;
-        text(ax + 22, hy + 14, tsize, TXT, title);
-        fit_text(sub, aw - 220, 16);
-        text(ax + 22, hy + 14 + tsize + 6, 16, DIM, sub);
+        /* tags under the title; the SID graphic sits to the right of them */
+        char tag[8][40]; col tagc[8]; int taglit[8], ntag = 0;
+        #define TAG(str, c, lit) do { snprintf(tag[ntag], sizeof tag[0], "%s", str); tagc[ntag] = c; taglit[ntag] = lit; ntag++; } while (0)
+        const int show_chips = tn && tn->nsid > 0 && tn->model[0] && aw >= 640;
         if (tn) {
-            float cx = ax + 22, cy = hy + hh - 30;
-            cx += chip(cx, cy, tn->info.rsid ? "RSID" : "PSID", VC[0], 1);
-            cx += chip(cx, cy, tn->pal ? "PAL" : "NTSC", VC[2], 1);
-            if (tn->info.sid_model == 1) cx += chip(cx, cy, "MOS 6581", DIM, 1);
-            else if (tn->info.sid_model == 2) cx += chip(cx, cy, "MOS 8580", DIM, 1);
-            char b[80];
-            snprintf(b, sizeof b, "LOAD $%04X", tn->info.load);
-            cx += chip(cx, cy, b, DIM, 0);
-            snprintf(b, sizeof b, "INIT $%04X", tn->info.init);
-            cx += chip(cx, cy, b, DIM, 0);
-            snprintf(b, sizeof b, "PLAY $%04X", tn->info.play);
-            cx += chip(cx, cy, b, DIM, 0);
-            if (tn->info.sid2) {
-                snprintf(b, sizeof b, "2. SID $%04X (muted)", tn->info.sid2);
-                cx += chip(cx, cy, b, WARN, 1);
+            char b[40];
+            TAG(tn->info.rsid ? "RSID" : "PSID", VC[0], 1);
+            TAG(tn->pal ? "PAL" : "NTSC", VC[2], 1);
+            if (!show_chips && tn->nsid == 1 && tn->model[0]) { snprintf(b, sizeof b, "MOS %d", tn->model[0]); TAG(b, DIM, 1); }
+            else if (!show_chips && tn->nsid > 1) {
+                int o = snprintf(b, sizeof b, "%d SIDs:", tn->nsid);
+                for (int i = 0; i < tn->nsid && o < (int)sizeof b - 8; i++)
+                    o += snprintf(b + o, sizeof b - (size_t)o, "%s%d", i ? " + " : " ", tn->model[i]);
+                TAG(b, DIM, 1);
             }
+            snprintf(b, sizeof b, "LOAD $%04X", tn->info.load); TAG(b, DIM, 0);
+            snprintf(b, sizeof b, "INIT $%04X", tn->info.init); TAG(b, DIM, 0);
+            snprintf(b, sizeof b, "PLAY $%04X", tn->info.play); TAG(b, DIM, 0);
+            if (tn->info.sid2) { snprintf(b, sizeof b, "2. SID $%04X", tn->info.sid2); TAG(b, DIM, 0); }
+        }
+        #undef TAG
+        float tagsw = 0;
+        for (int i = 0; i < ntag; i++) tagsw += chip_w(tag[i]);
+
+        /* SID graphic: one chip large, several smaller; tall only if it does not run into the tags */
+        float cwid = 0, cgap = 12, chipL = ax + aw - 22 - 150, chipR = chipL;
+        int nch = show_chips ? tn->nsid : 0;
+        if (nch) {
+            cwid = nch == 1 ? 200 : nch == 2 ? 128 : 94;
+            float tot = cwid * (float)nch + cgap * (float)(nch - 1);
+            if (chipR - tot < ax + 22 + tagsw + 16 && cwid > 150) cwid = 128;
+            tot = cwid * (float)nch + cgap * (float)(nch - 1);
+            float cap = (aw - 220) * 0.45f;
+            if (tot > cap) { cwid = (cap - cgap * (float)(nch - 1)) / (float)nch; tot = cap; }
+            chipL = chipR - tot;
+        }
+
+        float tmax = (nch ? chipL - 16 : ax + aw - 220 + 0) - (ax + 22);
+        if (!nch) tmax = aw - 220;
+        float tsize = 32;
+        while (tsize > 18 && text_width(title, tsize) > tmax) tsize -= 2;
+        text(ax + 22, hy + 14, tsize, TXT, title);
+        fit_text(sub, tmax, 16);
+        text(ax + 22, hy + 14 + tsize + 6, 16, DIM, sub);
+
+        float cx = ax + 22, cy = hy + hh - 30;
+        for (int i = 0; i < ntag; i++) cx += chip(cx, cy, tag[i], tagc[i], taglit[i]);
+
+        if (nch) {
+            static float lvl;
+            float tgt = g_paused ? 0 : (vs->peak[0] > vs->peak[1] ? vs->peak[0] : vs->peak[1]);
+            if (tgt > 1) tgt = 1;
+            lvl += (tgt - lvl) * 0.2f;
+            float ch = cwid * 0.40f, y0 = hy + (cwid > 150 ? 12 : 16);   /* small chips end above the tag row */
+            if (cwid > 150 && ch > hh - 26) ch = hh - 26;
+            for (int i = 0; i < nch; i++)
+                draw_sid(chipL + (cwid + cgap) * (float)i, y0, cwid, tn->model[i], lvl);
         }
         if (g_error[0]) text(ax + 22, hy + hh - 54, 13, WARN, g_error);
         /* time + song */

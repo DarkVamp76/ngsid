@@ -28,6 +28,10 @@ void engine_destroy(engine *e);
 /* Render `frames` stereo frames of signed 16-bit PCM (L,R interleaved). */
 size_t engine_render(engine *e, int16_t *out, size_t frames);
 
+/* Number of SID chips the tune uses, and the model each one runs as (6581 or 8580, 0 if unknown). */
+unsigned engine_sid_count(const engine *e);
+int engine_sid_model(const engine *e, unsigned n);
+
 /* Mute voices: bits 0-2 = voices, bit 3 = samples (volume register). */
 void engine_mute(engine *e, unsigned mask);
 

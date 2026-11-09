@@ -8,6 +8,7 @@ unsigned int NgSidBuilder::create(unsigned int sids)
 {
     m_status = true;
     m_chips.clear();
+    m_locked.clear();
     unsigned int count;
     for (count = 0; count < sids; count++)
     {
@@ -39,7 +40,15 @@ void NgSidBuilder::setConfig(const ngsid_config &cfg)
 
 ngsid *NgSidBuilder::synth() const
 {
-    return m_chips.empty() ? nullptr : m_chips[0]->synth();
+    return chips().empty() ? nullptr : chips()[0]->synth();
+}
+
+void NgSidBuilder::noteLock(libsidplayfp::NgSid *c) { m_locked.push_back(c); }
+
+void NgSidBuilder::noteUnlock(libsidplayfp::NgSid *c)
+{
+    for (size_t i = 0; i < m_locked.size(); i++)
+        if (m_locked[i] == c) { m_locked.erase(m_locked.begin() + (long)i); break; }
 }
 
 void NgSidBuilder::setNoVolBurst(bool on)
@@ -50,7 +59,7 @@ void NgSidBuilder::setNoVolBurst(bool on)
 
 libsidplayfp::NgSid *NgSidBuilder::chip() const
 {
-    return m_chips.empty() ? nullptr : m_chips[0];
+    return chips().empty() ? nullptr : chips()[0];
 }
 
 double NgSidBuilder::clockHz() const

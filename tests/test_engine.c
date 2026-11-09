@@ -71,6 +71,59 @@ int main(void) {
         CHECK(err == NULL, "no engine error");
     }
 
+    /* SID model shown in the GUI: default 6581, header 8580, forced by the option */
+    {
+        const uint8_t code[] = { 0x60, 0x60 };
+        size_t n = make_image(img, 0, 0x1000, 0x1001, code, sizeof code);
+        ngsid_config cfg; ngsid_config_default(&cfg);
+        char msg[160];
+        printf("SID model\n");
+        engine_opts o = { -1, -1 };
+        engine *e = engine_create(img, n, 1, 44100, &cfg, &o, msg, sizeof msg);
+        CHECK(e && engine_sid_count(e) == 1 && engine_sid_model(e, 0) == 6581, "unknown header -> 6581");
+        engine_destroy(e);
+        img[0x77] |= 0x20;                           /* flags: model bits = 8580 */
+        e = engine_create(img, n, 1, 44100, &cfg, &o, msg, sizeof msg);
+        CHECK(e && engine_sid_model(e, 0) == 8580, "header 8580 -> 8580");
+        engine_destroy(e);
+        o.sid_model = 0;
+        e = engine_create(img, n, 1, 44100, &cfg, &o, msg, sizeof msg);
+        CHECK(e && engine_sid_model(e, 0) == 6581, "--6581 overrides the header");
+        engine_destroy(e);
+    }
+
+    /* two SIDs (PSID v3, second chip at $D420): 6581 + 8580, both audible */
+    {
+        const uint8_t code[] = {
+            0xA9, 0x0F, 0x8D, 0x18, 0xD4, 0x8D, 0x38, 0xD4,        /* volume on both chips */
+            0xA9, 0x1C, 0x8D, 0x01, 0xD4, 0xA9, 0x08, 0x8D, 0x03, 0xD4,
+            0xA9, 0x00, 0x8D, 0x05, 0xD4, 0xA9, 0xF0, 0x8D, 0x06, 0xD4,
+            0xA9, 0x41, 0x8D, 0x04, 0xD4,                          /* chip 1: pulse */
+            0xA9, 0x28, 0x8D, 0x21, 0xD4,
+            0xA9, 0x00, 0x8D, 0x25, 0xD4, 0xA9, 0xF0, 0x8D, 0x26, 0xD4,
+            0xA9, 0x21, 0x8D, 0x24, 0xD4,                          /* chip 2: saw */
+            0x60, 0x60                                              /* init RTS, play RTS */
+        };
+        size_t n = make_image(img, 0, 0x1000, 0x1000 + sizeof code - 1, code, sizeof code);
+        put16(img + 4, 3);                           /* version 3 has the SID2 address */
+        put16(img + 0x76, 0x0004 | 0x10 | 0x80);     /* PAL, SID1 6581, SID2 8580 */
+        img[0x7A] = 0x42;                            /* $D420 */
+        ngsid_config cfg; ngsid_config_default(&cfg);
+        engine_opts o = { -1, -1 };
+        char msg[160];
+        printf("two SIDs\n");
+        engine *e = engine_create(img, n, 1, 44100, &cfg, &o, msg, sizeof msg);
+        CHECK(e != NULL, "engine created");
+        if (e) {
+            CHECK(engine_sid_count(e) == 2, "two chips (%u)", engine_sid_count(e));
+            CHECK(engine_sid_model(e, 0) == 6581 && engine_sid_model(e, 1) == 8580, "models %d + %d",
+                  engine_sid_model(e, 0), engine_sid_model(e, 1));
+            engine_destroy(e);
+        }
+        double r = play_rms(img, n, 1.0, &pk, &err);
+        CHECK(r > 5.0, "audible output (ac rms %.1f)", r);
+    }
+
     /* RSID: raster interrupt (via the KERNAL vector at $0314) toggles gate-free noise on voice 3 */
     {
         const uint8_t code[] = {

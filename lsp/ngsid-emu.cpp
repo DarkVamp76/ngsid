@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "ngsid-emu.h"
+#include "ngsid-builder.h"
 
 #include <cmath>
 #include <cstring>
@@ -34,11 +35,13 @@ bool NgSid::lock(EventScheduler *scheduler)
 {
     if (!sidemu::lock(scheduler)) return false;
     m_aud->lock(scheduler);
+    if (NgSidBuilder *b = static_cast<NgSidBuilder *>(builder())) b->noteLock(this);
     return true;
 }
 
 void NgSid::unlock()
 {
+    if (NgSidBuilder *b = static_cast<NgSidBuilder *>(builder())) b->noteUnlock(this);
     m_aud->unlock();
     sidemu::unlock();
 }
@@ -301,6 +304,7 @@ void NgSid::sampling(float systemclock, float freq, SidConfig::sampling_method_t
 
 void NgSid::model(SidConfig::sid_model_t model, bool digiboost)
 {
+    m_model = model == SidConfig::MOS8580 ? 8580 : 6581;
     m_aud->model(model, digiboost);
     m_status = m_s != nullptr && m_aud->getStatus();
     if (!m_aud->getStatus()) m_error = m_aud->error();

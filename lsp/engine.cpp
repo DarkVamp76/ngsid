@@ -94,6 +94,18 @@ void engine_destroy(engine *e)
     delete e;
 }
 
+unsigned engine_sid_count(const engine *e)
+{
+    unsigned n = e->tune ? e->tune->getInfo()->sidChips() : 1;
+    if (n > e->builder->count()) n = e->builder->count();
+    return n ? n : 1;
+}
+
+int engine_sid_model(const engine *e, unsigned n)
+{
+    return n < e->builder->count() ? e->builder->chipAt(n)->sidModel() : 0;
+}
+
 /* the mixing of several chips into stereo is done by the library; this call is deprecated
  * upstream in favour of per-chip buffers, but it is the one that mixes for us */
 #pragma GCC diagnostic push

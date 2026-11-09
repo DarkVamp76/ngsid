@@ -48,6 +48,7 @@ public:
     void setNoVolBurst(bool on) { m_noBurst = on; }
     ngsid *synth() const { return m_s; }
     double clockHz() const { return m_clk; }
+    int sidModel() const { return m_model; }     /* 6581 or 8580 once the player has set it, else 0 */
 
 private:
     struct Op { uint64_t sample; uint8_t kind; uint8_t reg; uint32_t val; };
@@ -66,6 +67,7 @@ private:
     void advance(int v, event_clock_t t);
     uint8_t waveNow(int v) const;
 
+    int m_model = 0;
     ngsid *m_s = nullptr;
     ngsid_config m_cfg;
     double m_clk = 985248.0, m_rate = 44100.0;

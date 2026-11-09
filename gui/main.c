@@ -8,12 +8,11 @@
  * a baked DejaVu Sans atlas). OpenGL is loaded at run time via SDL_GL_GetProcAddress, so
  * only libSDL2 is needed at link time.
  *
- * Keys: B HVSC online browser (Backspace = folder up; needs curl), Space pause, Left/Right song, Up/Down file, 1-3 mute voice, 4 mute digi, +/- volume, [ ] digi gain,
+ * Keys: B HVSC online browser (Backspace = folder up; needs curl), Space pause, Left/Right song, Up/Down file, 1-3 mute voice, 4 mute digi, +/- volume,
  *       R restart, F or F11 fullscreen, Esc quit. Mouse: click a voice card to mute it,
  *       click the playlist, drag the volume bar. Drop .sid files or folders onto the window.
  *
- * Options: --pal | --ntsc, --rate N, --exact-clock, --limiter | --no-limiter, --digi-wrap,
- *          --filter-clamp, --no-vol-burst, --digi-gain N, -s song,
+ * Options: --pal | --ntsc, --6581 | --8580, --rate N, -s song,
  *          --no-update-check, --version,
  *          --screenshot out.bmp [--frames N]   (render N frames, save, quit; for testing)
  */
@@ -341,7 +340,7 @@ typedef struct {
 static ngsid_config g_cfg;
 static int g_rate = 44100;
 static int g_pal_override = -1;
-static int g_no_burst;
+static int g_sid_model = -1;      /* -1 = from the tune */
 static unsigned g_mute;
 static float g_vol = 0.8f;
 static int g_paused;
@@ -354,7 +353,7 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
     (void)ud;
     static int16_t stage[NGSID_BLOCK * 2];
     static int pos = NGSID_BLOCK, have = NGSID_BLOCK;
-    static double dc[2] = { 128, 128 };
+    static double dc[2] = { 0, 0 };
     int16_t *out = (int16_t *)stream;
     int frames = len / 4;
     while (frames > 0) {
@@ -365,18 +364,17 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
             return;
         }
         if (pos >= have) {
-            uint8_t raw[NGSID_BLOCK * 2];
+            int16_t raw[NGSID_BLOCK * 2];
             size_t n = engine_render(t->e, raw, NGSID_BLOCK);
             have = (int)n;
             pos = 0;
-            float gain = 128.0f * g_vol * 1.25f;
+            const float gain = g_vol * 1.6f;
             float pk[2] = { 0, 0 };
             for (int i = 0; i < have; i++) {
                 for (int c = 0; c < 2; c++) {
                     double x = raw[i * 2 + c];
-                    dc[c] += (x - dc[c]) * 0.0005;
-                    float f = (float)((x - dc[c]) * 128.0) / 32768.0f;
-                    float a = fabsf(f);
+                    dc[c] += (x - dc[c]) * 0.0005;      /* tiny offsets of the emulated chip */
+                    float a = fabsf((float)((x - dc[c]) * gain / 32768.0));
                     if (a > pk[c]) pk[c] = a;
                     int v = (int)((x - dc[c]) * gain);
                     if (v > 32767) v = 32767;
@@ -386,7 +384,7 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
             }
             /* shift ring and append */
             memmove(g_vis.ring, g_vis.ring + have, (size_t)(2048 - have) * sizeof(float));
-            for (int i = 0; i < have; i++) g_vis.ring[2048 - have + i] = ((float)(stage[i * 2] + stage[i * 2 + 1]) / 65536.0f) / (g_vol * 1.25f > 0.01f ? g_vol * 1.25f : 0.01f);
+            for (int i = 0; i < have; i++) g_vis.ring[2048 - have + i] = ((float)(stage[i * 2] + stage[i * 2 + 1]) / 65536.0f) / (g_vol * 1.6f > 0.01f ? g_vol * 1.6f : 0.01f);
             for (int c = 0; c < 2; c++) if (pk[c] > g_vis.peak[c]) g_vis.peak[c] = pk[c];
             for (int v = 0; v < 3; v++) {
                 memcpy(g_vis.wave[v], ngsid_voice_wave(t->s, v), NGSID_BLOCK);
@@ -433,12 +431,13 @@ static int tune_load(const char *path, int song, tune_t **out_info) {
     cfg.pal = t->pal; cfg.stereo = 1; cfg.sample_rate = g_rate;
     engine_opts eo;
     eo.pal_override = g_pal_override;
-    eo.no_vol_burst = g_no_burst;
+    eo.sid_model = g_sid_model;
     char emsg[160] = "";
     t->e = engine_create(t->buf, (size_t)len, song, g_rate, &cfg, &eo, emsg, sizeof emsg);
     if (t->e) {
         t->s = engine_synth(t->e);
         ngsid_set_voice_mute(t->s, g_mute);
+        engine_mute(t->e, g_mute);
     } else {
         snprintf(g_error, sizeof g_error, "init: %s", emsg);
         /* keep the header data for display, but nothing to play */
@@ -1180,13 +1179,13 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
     for (int v = 0; v < 3; v++) {
         float vx = ax + v * (vw + gap);
         draw_voice(v, vx, vy, vw, vh, vs, t);
-        if (clicked(vx, vy, vw, vh)) { g_mute ^= 1u << v; if (g_tune) ngsid_set_voice_mute(g_tune->s, g_mute); click = 0; }
+        if (clicked(vx, vy, vw, vh)) { g_mute ^= 1u << v; if (g_tune) { ngsid_set_voice_mute(g_tune->s, g_mute); engine_mute(g_tune->e, g_mute); } click = 0; }
     }
 
     /* ---------------- digi channel */
     float dy = vy + vh + M, dh = 96;
     draw_digi(ax, dy, aw, dh, vs);
-    if (clicked(ax, dy, aw, dh)) { int ds = digi_source(vs); g_mute ^= ds >= 0 ? 1u << ds : 8u; if (g_tune) ngsid_set_voice_mute(g_tune->s, g_mute); click = 0; }
+    if (clicked(ax, dy, aw, dh)) { int ds = digi_source(vs); g_mute ^= ds >= 0 ? 1u << ds : 8u; if (g_tune) { ngsid_set_voice_mute(g_tune->s, g_mute); engine_mute(g_tune->e, g_mute); } click = 0; }
 
     /* ---------------- SID strip (filter, volume) */
     float fy = dy + dh + M, fh = 46;
@@ -1217,8 +1216,6 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
         snprintf(b, sizeof b, "%d", volm);
         rx -= text_right(rx, cy, 14, TXT, b);
         text_right(rx - 8, cy + 1, 12, DIM, "SID VOL");
-        snprintf(b, sizeof b, "DIGI %d%%  ( [ / ] )", g_cfg.digi_gain);
-        text_right(rx - 100, cy + 1, 12, g_cfg.digi_gain == 60 ? DIM : VC[2], b);
     }
 
     /* ---------------- spectrum + VU */
@@ -1366,21 +1363,15 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--pal")) g_pal_override = 1;
         else if (!strcmp(argv[i], "--ntsc")) g_pal_override = 0;
         else if (!strcmp(argv[i], "--rate") && i + 1 < argc) g_rate = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--exact-clock")) g_cfg.exact_clock = 1;
-        else if (!strcmp(argv[i], "--no-limiter")) g_cfg.limiter = 0;
-        else if (!strcmp(argv[i], "--limiter")) g_cfg.limiter = 1;
-        else if (!strcmp(argv[i], "--digi-wrap")) g_cfg.digi_wrap = 1;
-        else if (!strcmp(argv[i], "--filter-clamp")) g_cfg.filter_clamp = 1;
-        else if (!strcmp(argv[i], "--no-vol-burst")) g_no_burst = 1;
+        else if (!strcmp(argv[i], "--6581")) g_sid_model = 0;
+        else if (!strcmp(argv[i], "--8580")) g_sid_model = 1;
         else if (!strcmp(argv[i], "--no-update-check")) g_check_updates = 0;
         else if (!strcmp(argv[i], "--version")) { printf("ngSid %s\n", NGSID_VERSION); return 0; }
-        else if (!strcmp(argv[i], "--digi-gain") && i + 1 < argc) g_cfg.digi_gain = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-s") && i + 1 < argc) first_song = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) shot_frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
-            printf("usage: %s [--pal|--ntsc] [--rate N] [--exact-clock] [--limiter|--no-limiter] [--digi-wrap]\n"
-                   "       [--filter-clamp] [--no-vol-burst] [--digi-gain N] [-s song]\n"
+            printf("usage: %s [--pal|--ntsc] [--6581|--8580] [--rate N] [-s song]\n"
                    "       [--no-update-check] [--version]\n"
                    "       [--screenshot out.bmp [--frames N]] [file.sid|dir ...]\n", argv[0]);
             return 0;
@@ -1489,17 +1480,11 @@ int main(int argc, char **argv) {
                 case SDLK_b: if (browse) browse = 0; else browse_open(); break;
                 case SDLK_BACKSPACE: if (browse) browse_up(); break;
                 case SDLK_r: if (cur >= 0) play_index(cur, cur_song); break;
-                case SDLK_LEFTBRACKET: case SDLK_RIGHTBRACKET:
-                    g_cfg.digi_gain += e.key.keysym.sym == SDLK_RIGHTBRACKET ? 5 : -5;
-                    if (g_cfg.digi_gain < 0) g_cfg.digi_gain = 0;
-                    if (g_cfg.digi_gain > 400) g_cfg.digi_gain = 400;
-                    if (g_tune) ngsid_set_digi_gain(g_tune->s, g_cfg.digi_gain);
-                    break;
                 case SDLK_1: case SDLK_2: case SDLK_3: case SDLK_4:
                     { unsigned bit = (unsigned)(e.key.keysym.sym - SDLK_1);
                       if (bit == 3) { int ds = digi_source(&g_vis); if (ds >= 0) bit = (unsigned)ds; }
                       g_mute ^= 1u << bit; }
-                    if (g_tune) ngsid_set_voice_mute(g_tune->s, g_mute);
+                    if (g_tune) { ngsid_set_voice_mute(g_tune->s, g_mute); engine_mute(g_tune->e, g_mute); }
                     break;
                 case SDLK_PLUS: case SDLK_KP_PLUS: case SDLK_EQUALS: g_vol += 0.05f; if (g_vol > 1) g_vol = 1; break;
                 case SDLK_MINUS: case SDLK_KP_MINUS: g_vol -= 0.05f; if (g_vol < 0) g_vol = 0; break;

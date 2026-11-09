@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* engine.h - C interface to the playback engine: libsidplayfp (cycle exact 6510/VIC-II/CIA/PLA,
- * PSID and RSID) driving the ngSid VacSid style synth. */
+ * PSID and RSID) with reSIDfp as the SID; the ngSid synth runs silently alongside for the displays. */
 #ifndef ENGINE_H
 #define ENGINE_H
 
@@ -16,7 +16,7 @@ typedef struct engine engine;
 
 typedef struct {
     int pal_override;        /* -1 = from the tune, 1 = PAL, 0 = NTSC */
-    int no_vol_burst;        /* 1 = do not treat fast $D418 writes as digi samples */
+    int sid_model;           /* -1 = from the tune header, 0 = MOS 6581, 1 = MOS 8580 */
 } engine_opts;
 
 /* Load a PSID/RSID image from memory and select `song` (1-based, 0 = default).
@@ -25,10 +25,13 @@ engine *engine_create(const uint8_t *buf, size_t len, int song, int rate, const 
                       const engine_opts *opts, char *err, size_t errlen);
 void engine_destroy(engine *e);
 
-/* Render `frames` stereo frames of unsigned 8-bit PCM (L,R interleaved, silence = 0). */
-size_t engine_render(engine *e, uint8_t *raw, size_t frames);
+/* Render `frames` stereo frames of signed 16-bit PCM (L,R interleaved). */
+size_t engine_render(engine *e, int16_t *out, size_t frames);
 
-/* The synth that is being played (for visualisation and live settings). */
+/* Mute voices: bits 0-2 = voices, bit 3 = samples (volume register). */
+void engine_mute(engine *e, unsigned mask);
+
+/* The synth that is being played (for visualisation only). */
 ngsid *engine_synth(engine *e);
 
 /* 0 while playback is healthy, otherwise a message. */

@@ -3,6 +3,7 @@
 #define NGSID_BUILDER_H
 
 #include "sidplayfp/sidbuilder.h"
+#include <vector>
 
 namespace libsidplayfp { class NgSid; }
 
@@ -26,10 +27,13 @@ public:
     ngsid_config &config() { return m_cfg; }
     ngsid *synth() const;           /* first chip, or null */
     libsidplayfp::NgSid *chip() const;    /* first chip, or null */
+    unsigned count() const { return (unsigned)m_chips.size(); }
+    libsidplayfp::NgSid *chipAt(unsigned n) const { return m_chips[n]; }
     double clockHz() const;
 
 private:
     ngsid_config m_cfg;
+    std::vector<libsidplayfp::NgSid *> m_chips;     /* creation order = SID 1, 2, 3 */
 };
 
 #endif

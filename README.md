@@ -33,6 +33,8 @@ The first `make` downloads libsidplayfp 2.16.1 (checksum verified) and builds it
 ## Use
 
     ./ngSid tune.sid          # or a folder, or drag and drop files onto the window
+    ./ngSid                   # no argument: loads SID files from ~/Musik or ~/Music if present,
+                              # otherwise opens the online HVSC browser
     ./ngSid -s 2 tune.sid     # start with song 2
 
 Keys: `Space` pause, `Left/Right` song, `Up/Down` file, `1`-`3` mute voices, `4` mute digi, `+`/`-` volume,

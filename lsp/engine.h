@@ -36,7 +36,8 @@ int engine_sid_model(const engine *e, unsigned n);
 void engine_mute(engine *e, unsigned mask);
 
 /* The synth that is being played (for visualisation only). */
-ngsid *engine_synth(engine *e);
+ngsid *engine_synth(engine *e);                       /* synth of SID 1 (display only) */
+ngsid *engine_synth_at(engine *e, unsigned n);          /* synth of SID n+1, null if there is none */
 
 /* 0 while playback is healthy, otherwise a message. */
 const char *engine_error(const engine *e);

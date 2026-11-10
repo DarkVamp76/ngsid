@@ -322,17 +322,18 @@ typedef struct {
     uint8_t *buf;
     psid_info info;
     engine *e;
-    ngsid *s;               /* synth of the engine, valid as long as e */
+    ngsid *s;               /* synth of SID 1, valid as long as e */
+    ngsid *syn[3];          /* synth of each chip (display only) */
     int song, pal;
     int nsid, model[3];     /* chips in use and the model each runs as (6581/8580) */
 } tune_t;
 
 typedef struct {
-    uint8_t wave[3][NGSID_BLOCK];
-    ngsid_voice_info vi[3];
-    uint8_t digi[NGSID_BLOCK];
-    int hold[3];               /* samples of the last block a voice was held (oscillator digi) */
-    uint8_t reg[0x20];
+    uint8_t wave[3][3][NGSID_BLOCK];       /* [chip][voice] */
+    ngsid_voice_info vi[3][3];
+    uint8_t digi[NGSID_BLOCK];             /* digi channel of SID 1 */
+    int hold[3];               /* samples of the last block a voice of SID 1 was held (oscillator digi) */
+    uint8_t reg[0x20];         /* registers of SID 1 */
     float ring[2048];          /* mono, newest sample last */
     float peak[2];             /* max |sample| per channel since the UI last looked */
     uint64_t frames;
@@ -388,9 +389,12 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
             memmove(g_vis.ring, g_vis.ring + have, (size_t)(2048 - have) * sizeof(float));
             for (int i = 0; i < have; i++) g_vis.ring[2048 - have + i] = ((float)(stage[i * 2] + stage[i * 2 + 1]) / 65536.0f) / (g_vol * 1.6f > 0.01f ? g_vol * 1.6f : 0.01f);
             for (int c = 0; c < 2; c++) if (pk[c] > g_vis.peak[c]) g_vis.peak[c] = pk[c];
-            for (int v = 0; v < 3; v++) {
-                memcpy(g_vis.wave[v], ngsid_voice_wave(t->s, v), NGSID_BLOCK);
-                ngsid_get_voice_info(t->s, v, &g_vis.vi[v]);
+            for (int c = 0; c < t->nsid && c < 3; c++) {
+                if (!t->syn[c]) continue;
+                for (int v = 0; v < 3; v++) {
+                    memcpy(g_vis.wave[c][v], ngsid_voice_wave(t->syn[c], v), NGSID_BLOCK);
+                    ngsid_get_voice_info(t->syn[c], v, &g_vis.vi[c][v]);
+                }
             }
             memcpy(g_vis.digi, ngsid_digi_wave(t->s), NGSID_BLOCK);
             for (int v = 0; v < 3; v++) g_vis.hold[v] = ngsid_voice_hold(t->s, v);
@@ -403,6 +407,13 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
         memcpy(out, stage + pos * 2, (size_t)n * 4);
         out += n * 2; pos += n; frames -= n;
     }
+}
+
+/* Mute mask: voice N of every SID, and the digi channel (bit 3). */
+static void apply_mute(void) {
+    if (!g_tune || !g_tune->e) return;
+    for (int i = 0; i < g_tune->nsid && i < 3; i++) if (g_tune->syn[i]) ngsid_set_voice_mute(g_tune->syn[i], g_mute);
+    engine_mute(g_tune->e, g_mute);
 }
 
 static void tune_free(tune_t *t) {
@@ -441,7 +452,8 @@ static int tune_load(const char *path, int song, tune_t **out_info) {
         t->nsid = (int)engine_sid_count(t->e);
         if (t->nsid > 3) t->nsid = 3;
         for (int i = 0; i < t->nsid; i++) t->model[i] = engine_sid_model(t->e, (unsigned)i);
-        ngsid_set_voice_mute(t->s, g_mute);
+        for (int i = 0; i < t->nsid; i++) t->syn[i] = engine_synth_at(t->e, (unsigned)i);
+        for (int i = 0; i < t->nsid; i++) if (t->syn[i]) ngsid_set_voice_mute(t->syn[i], g_mute);
         engine_mute(t->e, g_mute);
     } else {
         snprintf(g_error, sizeof g_error, "init: %s", emsg);
@@ -735,7 +747,7 @@ static void fft(double *re, double *im, int n) {
 #define NBANDS 64
 static float band[NBANDS], bandpk[NBANDS], bandhold[NBANDS];
 static float vu[2], vupk[2], vuhold[2];
-static float scope_amp[3] = { 60, 60, 60 };
+static float scope_amp[9] = { 60, 60, 60, 60, 60, 60, 60, 60, 60 };
 static float glow[3];
 static float g_beat;    /* 1 at a detected beat, decays quickly: drives the pulse of the SID graphic */
 
@@ -871,6 +883,26 @@ static void draw_sid(float x, float y, float w, int model, float lvl, float beat
     }
 }
 
+/* Where libsidplayfp's mixer puts chip i of n in the stereo field: with two chips SID 1 sits at
+ * left 1.0 / right 0.5 and SID 2 mirrored, with three SID 2 is centred. -1 = left, 0 = centre, +1 = right. */
+static float sid_pan(int n, int i) {
+    if (n < 2) return 0;
+    if (i == 0) return -1.0f / 3.0f;
+    if (i == n - 1) return 1.0f / 3.0f;
+    return 0;
+}
+
+static void draw_pan(float x, float y, float w, float pan, col accent) {
+    text(x, y - 3, 9, alpha(DIM, 0.8f), "L");
+    text_right(x + w, y - 3, 9, alpha(DIM, 0.8f), "R");
+    float bx = x + 12, bw = w - 24, cxm = bx + bw / 2;
+    rrect(bx, y, bw, 4, 2, alpha(FAINT, 0.40f));
+    rect(cxm - 0.5f, y - 2, 1, 8, alpha(DIM, 0.55f));
+    float mx = cxm + pan * bw / 2;
+    set_additive(1); blob(mx, y + 2, 7, alpha(accent, 0.45f)); set_additive(0);
+    rrect(mx - 3.5f, y - 1.5f, 7, 7, 3.5f, accent);
+}
+
 static void card(float x, float y, float w, float h, int hover) {
     shadow(x, y + 6, w, h, 14, 22, C(0, 0, 0, 0.5f));
     rrect(x, y, w, h, 14, alpha(EDGE, hover ? 0.75f : 0.45f));
@@ -883,7 +915,7 @@ static void mmss(char *buf, size_t cap, double sec) {
 }
 
 static void draw_voice(int v, float x, float y, float w, float h, const vis_t *vs, double t) {
-    const ngsid_voice_info *vi = &vs->vi[v];
+    const ngsid_voice_info *vi = &vs->vi[0][v];
     col vc = VC[v];
     int muted = (g_mute >> v) & 1;
     int active = ((vi->ctrl & 1) || vi->level > 0) && vs->running;
@@ -939,7 +971,7 @@ static void draw_voice(int v, float x, float y, float w, float h, const vis_t *v
     float sx = x + 14, sy = y + 136, sw = w - 28, sh = 56;
     rrect(sx, sy, sw, sh, 8, C(0.03f, 0.04f, 0.07f, 1));
     rect(sx + 6, sy + sh / 2, sw - 12, 1, alpha(FAINT, 0.25f));
-    const uint8_t *wv = vs->wave[v];
+    const uint8_t *wv = vs->wave[0][v];
     double mean = 0;
     for (int i = 0; i < NGSID_BLOCK; i++) mean += wv[i];
     mean /= NGSID_BLOCK;
@@ -979,6 +1011,81 @@ static void draw_voice(int v, float x, float y, float w, float h, const vis_t *v
 }
 
 
+/* Compact voice card for multi-SID tunes: one row per chip, three cards per row. */
+static void draw_voice_compact(int c, int v, float x, float y, float w, float h, const vis_t *vs) {
+    const ngsid_voice_info *vi = &vs->vi[c][v];
+    const col vc = VC[v];
+    const int muted = (g_mute >> v) & 1, tall = h >= 96;
+    const int active = ((vi->ctrl & 1) || vi->level > 0) && vs->running;
+    card(x, y, w, h, hit(x, y, w, h));
+    char buf[48];
+    snprintf(buf, sizeof buf, "SID %d  VOICE %d", c + 1, v + 1);
+    text(x + 14, y + 8, 11, DIM, buf);
+    float lx = x + w - 18, ly = y + 14;
+    rrect(lx - 4, ly - 4, 8, 8, 4, alpha(FAINT, 0.5f));
+    if ((vi->ctrl & 1) && vs->running) {
+        set_additive(1); blob(lx, ly, 8, alpha(vc, 0.55f)); set_additive(0);
+        rrect(lx - 3.5f, ly - 3.5f, 7, 7, 3.5f, vc);
+    }
+    double clk = g_tune && g_tune->pal ? 985248.0 : 1022727.0;
+    double hz = vi->freq * clk / 16777216.0;
+    char note[16] = "--", hzs[48] = "";
+    if (vi->freq && hz > 8) {
+        double m = 69 + 12 * log2(hz / 440.0);
+        int mi = (int)floor(m + 0.5);
+        if (mi >= 0 && mi < 128) snprintf(note, sizeof note, "%s%d", NOTE[mi % 12], mi / 12 - 1);
+        snprintf(hzs, sizeof hzs, "%.1f Hz", hz);
+    }
+    col nc = active && !muted ? mix(TXT, vc, 0.35f) : alpha(FAINT, 1);
+    float ns = tall ? 30 : 24;
+    text(x + 14, y + 21, ns, nc, note);
+    text(x + 14, y + 21 + ns + 3, 11, alpha(DIM, active ? 1.0f : 0.5f), hzs);
+    /* mini scope, right of the note */
+    float sx = x + w * 0.45f, sy = y + 24, sw = x + w - 14 - sx, sh = tall ? 40 : 30;
+    rrect(sx, sy, sw, sh, 6, C(0.03f, 0.04f, 0.07f, 1));
+    rect(sx + 4, sy + sh / 2, sw - 8, 1, alpha(FAINT, 0.25f));
+    const uint8_t *wv = vs->wave[c][v];
+    double mean = 0;
+    for (int i = 0; i < NGSID_BLOCK; i++) mean += wv[i];
+    mean /= NGSID_BLOCK;
+    int trig = 0;
+    for (int i = 0; i < 380; i++) if (wv[i] <= mean && wv[i + 1] > mean) { trig = i; break; }
+    float pk = 0;
+    for (int i = 0; i < NGSID_BLOCK; i++) { float d = (float)fabs(wv[i] - mean); if (d > pk) pk = d; }
+    float target = pk < 20 ? 20 : pk;
+    float *amp = &scope_amp[c * 3 + v];
+    if (target > *amp) *amp = target; else *amp += (target - *amp) * 0.08f;
+    enum { NP = 120 };
+    float pts[NP * 2];
+    for (int i = 0; i < NP; i++) {
+        float val = (float)(wv[trig + i * 3] - mean) / *amp;
+        if (muted) val = 0;
+        pts[2 * i] = sx + 4 + (sw - 8) * (float)i / (NP - 1);
+        pts[2 * i + 1] = sy + sh / 2 - val * (sh / 2 - 4);
+    }
+    col lc = muted ? alpha(FAINT, 1) : vc;
+    set_additive(1);
+    polyline(pts, NP, 4.0f, 3.0f, alpha(lc, 0.30f));
+    set_additive(0);
+    polyline(pts, NP, 1.3f, 3.0f, mix(lc, C(1, 1, 1, 1), 0.35f));
+    if (tall) {
+        float cx = x + 14, cy = y + h - 36;
+        cx += chip(cx, cy, "TRI", vc, (vi->ctrl & 0x10) != 0);
+        cx += chip(cx, cy, "SAW", vc, (vi->ctrl & 0x20) != 0);
+        cx += chip(cx, cy, "PUL", vc, (vi->ctrl & 0x40) != 0);
+        cx += chip(cx, cy, "NOI", vc, (vi->ctrl & 0x80) != 0);
+    }
+    /* envelope */
+    float ey = y + h - 12, ew = w - 28;
+    rrect(x + 14, ey, ew, 4, 2, alpha(FAINT, 0.35f));
+    float lvl = vs->running ? vi->level / 127.0f : 0;
+    if (lvl > 0.005f) rrect(x + 14, ey, ew * lvl < 4 ? 4 : ew * lvl, 4, 2, alpha(muted ? FAINT : vc, 0.95f));
+    if (muted) {
+        rrect(x, y, w, h, 14, C(0.03f, 0.04f, 0.07f, 0.55f));
+        text(x + w / 2 - text_width("MUTED", 16) / 2, y + h / 2 - 9, 16, VC[2], "MUTED");
+    }
+}
+
 static float digi_dmax = 32;
 
 /* The digi display normally shows the $D418 volume-register channel. Tunes that play samples
@@ -998,7 +1105,7 @@ static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
     const int src = digi_source(vs);
     int muted = src >= 0 ? (g_mute >> src) & 1 : (g_mute >> 3) & 1;
     card(x, y, w, h, hit(x, y, w, h));
-    const uint8_t *d = src >= 0 ? vs->wave[src] : vs->digi;
+    const uint8_t *d = src >= 0 ? vs->wave[0][src] : vs->digi;
     int changes = 0, active = 0, last = d[0];
     for (int i = 0; i < NGSID_BLOCK; i++) {
         if (d[i] != last) { changes++; last = d[i]; }
@@ -1072,8 +1179,13 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
     /* background */
     rect_grad(0, 0, W, H, BG1, BG0);
     float act = 0;
+    const int nsid = g_tune && g_tune->nsid > 1 ? (g_tune->nsid > 3 ? 3 : g_tune->nsid) : 1;
     for (int v = 0; v < 3; v++) {
-        float target = (vs->running && (vs->vi[v].ctrl & 1)) ? 1.0f : (vs->running ? vs->vi[v].level / 127.0f : 0);
+        float target = 0;
+        for (int c = 0; c < nsid; c++) {
+            float tg = (vs->running && (vs->vi[c][v].ctrl & 1)) ? 1.0f : (vs->running ? vs->vi[c][v].level / 127.0f : 0);
+            if (tg > target) target = tg;
+        }
         if (g_mute >> v & 1) target = 0;
         glow[v] += (target - glow[v]) * 0.12f;
         act += glow[v];
@@ -1265,8 +1377,13 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             lvl += (tgt - lvl) * 0.2f;
             float ch = cwid * 0.40f, y0 = hy + (cwid > 150 ? 12 : 16);   /* small chips end above the tag row */
             if (cwid > 150 && ch > hh - 26) ch = hh - 26;
-            for (int i = 0; i < nch; i++)
-                draw_sid(chipL + (cwid + cgap) * (float)i, y0, cwid, tn->model[i], lvl, g_paused ? 0.0f : g_beat);
+            for (int i = 0; i < nch; i++) {
+                float cxx = chipL + (cwid + cgap) * (float)i;
+                draw_sid(cxx, y0, cwid, tn->model[i], lvl, g_paused ? 0.0f : g_beat);
+                if (nch > 1)
+                    draw_pan(cxx + 4, y0 + cwid * 0.40f + 9, cwid - 8, sid_pan(nch, i),
+                             tn->model[i] == 8580 ? C(0.35f, 0.82f, 1.0f, 1) : C(1.0f, 0.62f, 0.28f, 1));
+            }
         }
         if (g_error[0]) text(ax + 22, hy + hh - 54, 13, WARN, g_error);
         /* time + song */
@@ -1285,16 +1402,27 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
     /* ---------------- voice cards */
     float vy = hy + hh + M, vh = 214, gap = M;
     float vw = (aw - 2 * gap) / 3;
-    for (int v = 0; v < 3; v++) {
-        float vx = ax + v * (vw + gap);
-        draw_voice(v, vx, vy, vw, vh, vs, t);
-        if (clicked(vx, vy, vw, vh)) { g_mute ^= 1u << v; if (g_tune) { ngsid_set_voice_mute(g_tune->s, g_mute); engine_mute(g_tune->e, g_mute); } click = 0; }
+    if (nsid == 1) {
+        for (int v = 0; v < 3; v++) {
+            float vx = ax + v * (vw + gap);
+            draw_voice(v, vx, vy, vw, vh, vs, t);
+            if (clicked(vx, vy, vw, vh)) { g_mute ^= 1u << v; apply_mute(); click = 0; }
+        }
+    } else {   /* several SIDs: one compact row per chip; a click mutes that voice on every chip */
+        float rh = nsid == 2 ? 101 : 76;
+        vh = rh * (float)nsid + gap * (float)(nsid - 1);
+        for (int c = 0; c < nsid; c++)
+            for (int v = 0; v < 3; v++) {
+                float vx = ax + v * (vw + gap), cyy = vy + (float)c * (rh + gap);
+                draw_voice_compact(c, v, vx, cyy, vw, rh, vs);
+                if (clicked(vx, cyy, vw, rh)) { g_mute ^= 1u << v; apply_mute(); click = 0; }
+            }
     }
 
     /* ---------------- digi channel */
     float dy = vy + vh + M, dh = 96;
     draw_digi(ax, dy, aw, dh, vs);
-    if (clicked(ax, dy, aw, dh)) { int ds = digi_source(vs); g_mute ^= ds >= 0 ? 1u << ds : 8u; if (g_tune) { ngsid_set_voice_mute(g_tune->s, g_mute); engine_mute(g_tune->e, g_mute); } click = 0; }
+    if (clicked(ax, dy, aw, dh)) { int ds = digi_source(vs); g_mute ^= ds >= 0 ? 1u << ds : 8u; apply_mute(); click = 0; }
 
     /* ---------------- SID strip (filter, volume) */
     float fy = dy + dh + M, fh = 46;
@@ -1611,7 +1739,7 @@ int main(int argc, char **argv) {
                     { unsigned bit = (unsigned)(e.key.keysym.sym - SDLK_1);
                       if (bit == 3) { int ds = digi_source(&g_vis); if (ds >= 0) bit = (unsigned)ds; }
                       g_mute ^= 1u << bit; }
-                    if (g_tune) { ngsid_set_voice_mute(g_tune->s, g_mute); engine_mute(g_tune->e, g_mute); }
+                    apply_mute();
                     break;
                 case SDLK_PLUS: case SDLK_KP_PLUS: case SDLK_EQUALS: g_vol += 0.05f; if (g_vol > 1) g_vol = 1; break;
                 case SDLK_MINUS: case SDLK_KP_MINUS: g_vol -= 0.05f; if (g_vol < 0) g_vol = 0; break;

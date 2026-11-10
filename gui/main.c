@@ -1371,15 +1371,37 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
         for (int i = 0; i < ntag; i++) cx += chip(cx, cy, tag[i], tagc[i], taglit[i]);
 
         if (nch) {
-            static float lvl;
-            float tgt = g_paused ? 0 : (vs->peak[0] > vs->peak[1] ? vs->peak[0] : vs->peak[1]);
-            if (tgt > 1) tgt = 1;
-            lvl += (tgt - lvl) * 0.2f;
+            /* every chip animates on its own: level from its own voices, pulse on its own note onsets */
+            static float clvl[3], cbeat[3], pgate[3][3], plvl[3][3];
+            static Uint32 ct;
+            Uint32 now_ms = SDL_GetTicks();
+            float cdt = ct ? (float)(now_ms - ct) / 1000.0f : 0.016f;
+            ct = now_ms;
+            if (cdt > 0.1f) cdt = 0.1f;
+            for (int i = 0; i < nch && i < 3; i++) {
+                float tgt = 0, kick = 0;
+                for (int v = 0; v < 3; v++) {
+                    const ngsid_voice_info *vv = &vs->vi[i][v];
+                    float l = vs->running && !g_paused ? vv->level / 127.0f : 0;
+                    float gt = vs->running && !g_paused && (vv->ctrl & 1) ? 1.0f : 0.0f;
+                    if (l > tgt) tgt = l;
+                    if (gt > pgate[i][v] || l > plvl[i][v] + 0.25f) kick = 1;   /* gate on or sudden level jump */
+                    pgate[i][v] = gt; plvl[i][v] = l;
+                }
+                if (nch == 1) {                          /* single chip: the audio beat as before */
+                    float a = vs->peak[0] > vs->peak[1] ? vs->peak[0] : vs->peak[1];
+                    tgt = g_paused ? 0 : (a > 1 ? 1 : a);
+                    kick = g_paused ? 0 : g_beat;
+                }
+                clvl[i] += (tgt - clvl[i]) * 0.2f;
+                if (kick > cbeat[i]) cbeat[i] = kick;
+                cbeat[i] *= expf(-cdt * 7.0f);
+            }
             float ch = cwid * 0.40f, y0 = hy + (cwid > 150 ? 12 : 16);   /* small chips end above the tag row */
             if (cwid > 150 && ch > hh - 26) ch = hh - 26;
             for (int i = 0; i < nch; i++) {
                 float cxx = chipL + (cwid + cgap) * (float)i;
-                draw_sid(cxx, y0, cwid, tn->model[i], lvl, g_paused ? 0.0f : g_beat);
+                draw_sid(cxx, y0, cwid, tn->model[i], clvl[i < 3 ? i : 2], g_paused ? 0.0f : cbeat[i < 3 ? i : 2]);
                 if (nch > 1)
                     draw_pan(cxx + 4, y0 + cwid * 0.40f + 9, cwid - 8, sid_pan(nch, i),
                              tn->model[i] == 8580 ? C(0.35f, 0.82f, 1.0f, 1) : C(1.0f, 0.62f, 0.28f, 1));

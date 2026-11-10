@@ -148,6 +148,11 @@ void engine_mute(engine *e, unsigned mask)
 
 ngsid *engine_synth(engine *e) { return e->builder->synth(); }
 
+ngsid *engine_synth_at(engine *e, unsigned n)
+{
+    return n < e->builder->count() ? e->builder->chipAt(n)->synth() : nullptr;
+}
+
 const char *engine_error(const engine *e) { return e->failed ? e->error.c_str() : nullptr; }
 
 const char *engine_version(void) { return "libsidplayfp"; }

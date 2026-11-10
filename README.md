@@ -58,8 +58,8 @@ SID files are not included. The best source is the High Voltage SID Collection (
 
 ## Status and limits
 
-Not implemented yet: visualisation of additional SID chips (multi-SID tunes play, but only the first chip is shown), and
-SID model/filter settings beyond `--6581` / `--8580`. Please report tunes that sound different from a real SID.
+Multi-SID tunes (2SID and 3SID) are played completely; the GUI shows one row of voice cards per chip. The filter strip and the digi channel show SID 1 only.
+Not implemented yet: SID model/filter settings beyond `--6581` / `--8580`. Please report tunes that sound different from a real SID.
 
 ## Credits
 

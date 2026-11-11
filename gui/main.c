@@ -684,6 +684,16 @@ static void job_poll(void) {
             if (idx < 0) { add_file(job.file); idx = npl - 1; }
             if (!pl[idx].rel) pl[idx].rel = strdup(job.path);
             play_index(idx, 0);
+#ifdef __EMSCRIPTEN__
+            /* address bar = link to this tune (replaceState does not fire hashchange) */
+            EM_ASM({
+                var r = '';
+                var p = $0;
+                var c;
+                while ((c = HEAPU8[p++])) r += String.fromCharCode(c);
+                try { history.replaceState(null, '', '#/' + encodeURI(decodeURIComponent(escape(r)))); } catch (e) {}
+            }, job.path);
+#endif
         }
     } else {
         free(job.res);
@@ -1650,6 +1660,22 @@ static double freq;
 
 #ifdef __EMSCRIPTEN__
 /* Called by the host page after a dropped/selected file was written to the virtual file system. */
+/* Play a tune of the HVSC: "97064" (database id of hvsc.c64.org) or "MUSICIANS/K/KB/Katakis_Remix.sid". */
+EMSCRIPTEN_KEEPALIVE int ng_web_hvsc(const char *what) {
+    char path[768];
+    const char *p = what;
+    while (*p == '/') p++;
+    int digits = *p != 0;
+    for (const char *q = p; *q; q++) if (*q < '0' || *q > '9') { digits = 0; break; }
+    if (digits) {
+        if (hvsc_resolve_id(atoi(p), path, sizeof path)) { snprintf(br_msg, sizeof br_msg, "Unknown HVSC id"); return -1; }
+    } else {
+        snprintf(path, sizeof path, "%s", p);
+    }
+    job_start(1, path);
+    return 0;
+}
+
 EMSCRIPTEN_KEEPALIVE void ng_web_add(const char *path) {
     int was = npl;
     add_path(path, 0);

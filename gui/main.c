@@ -8,7 +8,7 @@
  * a baked DejaVu Sans atlas). OpenGL is loaded at run time via SDL_GL_GetProcAddress, so
  * only libSDL2 is needed at link time.
  *
- * Keys: B HVSC online browser (Backspace = folder up; needs curl), Space pause, Left/Right song, Up/Down file, 1-3 mute voice, 4 mute digi, +/- volume,
+ * Keys: V orb view, B HVSC online browser (Backspace = folder up; needs curl), Space pause, Left/Right song, Up/Down file, 1-3 mute voice, 4 mute digi, +/- volume,
  *       R restart, F or F11 fullscreen, Esc quit. Mouse: click a voice card to mute it,
  *       click the playlist, drag the volume bar. Drop .sid files or folders onto the window.
  *
@@ -1211,6 +1211,69 @@ static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
     }
 }
 
+/* ================================================================== Orb: sphere of dots deformed by the spectrum */
+#define ORB_RINGS 78
+#define ORB_LON 132
+#define ORB_MAX 8000
+static int g_orb;                       /* 1 = orb instead of the voice cards (key V / switch in the filter strip) */
+static float orb_u[ORB_MAX][3];
+static int orb_n;
+static float orb_bs[NBANDS];
+
+static void draw_orb(float x, float y, float w, float h, float dtf) {
+    static int init;
+    static float t, spin;
+    if (!init) {
+        for (int j = 0; j < ORB_RINGS && orb_n < ORB_MAX; j++) {
+            float th = 3.14159265f * (j + 0.5f) / ORB_RINGS, yy = cosf(th), rr = sinf(th);
+            int cnt = (int)(ORB_LON * rr + 0.5f);
+            if (cnt < 6) cnt = 6;
+            float off = (j & 1) ? 0.5f : 0.0f;
+            for (int k = 0; k < cnt && orb_n < ORB_MAX; k++) {
+                float ph = 6.2831853f * (k + off) / cnt;
+                orb_u[orb_n][0] = cosf(ph) * rr; orb_u[orb_n][1] = yy; orb_u[orb_n][2] = sinf(ph) * rr;
+                orb_n++;
+            }
+        }
+        init = 1;
+    }
+    float dt = dtf > 0.1f ? 0.1f : dtf;
+    float beat = g_paused ? 0.0f : g_beat;
+    if (!g_paused) { t += dt; spin += dt * (0.20f + 0.45f * beat); }
+    card(x, y, w, h, 0);
+    text(x + 18, y + 12, 12, DIM, "ORB");
+    for (int b = 0; b < NBANDS; b++) {
+        float l = band[b > 0 ? b - 1 : b], r = band[b < NBANDS - 1 ? b + 1 : b];
+        float v = 0.5f * band[b] + 0.25f * (l + r);
+        orb_bs[b] += (v - orb_bs[b]) * (v > orb_bs[b] ? 0.7f : 0.25f);
+    }
+    float cx = x + w / 2, cy = y + h / 2 + 6, R = 0.26f * (w < h ? w : h);
+    float ca = cosf(spin), sa = sinf(spin), ct = cosf(0.42f), st = sinf(0.42f), fz = 8.0f * R;
+    set_additive(1);
+    blob(cx, cy, R * (0.55f + 0.12f * beat), alpha(VC[0], 0.05f + 0.08f * beat));
+    for (int i = 0; i < orb_n; i++) {
+        float ux = orb_u[i][0], uy = orb_u[i][1], uz = orb_u[i][2];
+        float lat = fabsf(uy), bf = lat * (NBANDS - 1);
+        int b0 = (int)bf;
+        if (b0 > NBANDS - 2) b0 = NBANDS - 2;
+        float fr = bf - b0, lon = atan2f(uz, ux);
+        float e = (orb_bs[b0] * (1 - fr) + orb_bs[b0 + 1] * fr) * (0.65f + 0.35f * sinf(lon * 3.0f + t * 1.3f + lat * 5.0f));
+        if (e > 1) e = 1;
+        float rad = R * (1.0f + 0.07f * beat + 0.55f * e);
+        float px = ux * rad, py = uy * rad, pz = uz * rad;
+        float rx = px * ca + pz * sa, rz = -px * sa + pz * ca;
+        float ry = py * ct - rz * st, rz2 = py * st + rz * ct;
+        float sc = fz / (fz + rz2), sx = cx + rx * sc, sy = cy + ry * sc;
+        float dn = 0.5f - 0.5f * rz2 / (1.6f * R);
+        if (dn < 0) dn = 0;
+        if (dn > 1) dn = 1;
+        col c = e < 0.5f ? mix(VC[0], VC[1], e * 2.0f) : mix(VC[1], VC[2], (e - 0.5f) * 2.0f);
+        c = mix(c, C(1, 1, 1, 1), 0.18f * dn);
+        blob(sx, sy, 0.60f + 0.75f * dn + 0.70f * e, alpha(c, (0.13f + 0.62f * dn) * (0.42f + 0.95f * e)));
+    }
+    set_additive(0);
+}
+
 static void draw_ui(const vis_t *vs, double t, double dt) {
     float W = view_w, H = view_h;
     int vol_changed = 0;
@@ -1470,15 +1533,18 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
     /* ---------------- voice cards */
     float vy = hy + hh + M, vh = 214, gap = M;
     float vw = (aw - 2 * gap) / 3;
-    if (nsid == 1) {
+    float rhc = nsid == 2 ? 101 : 76;
+    if (nsid > 1) vh = rhc * (float)nsid + gap * (float)(nsid - 1);
+    if (g_orb) {
+        /* orb covers the voice cards and the digi channel */
+    } else if (nsid == 1) {
         for (int v = 0; v < 3; v++) {
             float vx = ax + v * (vw + gap);
             draw_voice(v, vx, vy, vw, vh, vs, t);
             if (clicked(vx, vy, vw, vh)) { g_mute ^= 1u << v; apply_mute(); click = 0; }
         }
     } else {   /* several SIDs: one compact row per chip; a click mutes that voice on every chip */
-        float rh = nsid == 2 ? 101 : 76;
-        vh = rh * (float)nsid + gap * (float)(nsid - 1);
+        float rh = rhc;
         for (int c = 0; c < nsid; c++)
             for (int v = 0; v < 3; v++) {
                 float vx = ax + v * (vw + gap), cyy = vy + (float)c * (rh + gap);
@@ -1489,8 +1555,9 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
 
     /* ---------------- digi channel */
     float dy = vy + vh + M, dh = 96;
-    draw_digi(ax, dy, aw, dh, vs);
-    if (clicked(ax, dy, aw, dh)) { int ds = digi_source(vs); g_mute ^= ds >= 0 ? 1u << ds : 8u; apply_mute(); click = 0; }
+    if (g_orb) draw_orb(ax, vy, aw, dy + dh - vy, (float)dt);
+    else draw_digi(ax, dy, aw, dh, vs);
+    if (!g_orb && clicked(ax, dy, aw, dh)) { int ds = digi_source(vs); g_mute ^= ds >= 0 ? 1u << ds : 8u; apply_mute(); click = 0; }
 
     /* ---------------- SID strip (filter, volume) */
     float fy = dy + dh + M, fh = 46;
@@ -1517,6 +1584,17 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
         text(cx, cy + 1, 12, DIM, "ROUTE");
         cx += 50;
         for (int v = 0; v < 3; v++) { snprintf(b, sizeof b, "V%d", v + 1); cx += chip(cx, cy, b, VC[v], (route >> v & 1) != 0); }
+        {   /* VOICES | ORB switch (also for touch) */
+            float sw = 70, sx0 = ax + aw - 18 - 150 - 2 * sw;
+            for (int i = 0; i < 2; i++) {
+                float xx = sx0 + i * sw;
+                int on = (i == 1) == (g_orb != 0), hv = hit(xx, cy - 2, sw - 4, 20);
+                rrect(xx, cy - 2, sw - 4, 20, 6, on ? alpha(VC[2], 0.25f) : alpha(FAINT, hv ? 0.30f : 0.16f));
+                const char *l = i ? "ORB" : "VOICES";
+                text(xx + (sw - 4 - text_width(l, 11)) / 2, cy + 2, 11, on ? VC[2] : alpha(DIM, 0.9f), l);
+                if (clicked(xx, cy - 2, sw - 4, 20)) { g_orb = i; click = 0; }
+            }
+        }
         float rx = ax + aw - 18;
         snprintf(b, sizeof b, "%d", volm);
         rx -= text_right(rx, cy, 14, TXT, b);
@@ -1732,6 +1810,7 @@ static void iter(void) {
                 case SDLK_END: if (browse) browse_move(100000); break;
                 case SDLK_RETURN: case SDLK_KP_ENTER: if (browse) browse_activate(br_sel); break;
                 case SDLK_b: if (browse) browse = 0; else browse_open(); break;
+                case SDLK_v: g_orb = !g_orb; break;
                 case SDLK_BACKSPACE: if (browse) browse_up(); break;
                 case SDLK_r: if (cur >= 0) play_index(cur, cur_song); break;
                 case SDLK_1: case SDLK_2: case SDLK_3: case SDLK_4:

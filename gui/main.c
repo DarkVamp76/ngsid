@@ -149,6 +149,7 @@ static GLuint prog, vao, vbo, fonttex;
 static GLint u_res, u_pxs, u_tex;
 
 static float view_w, view_h, view_scale = 1;
+static int g_mobile;                  /* touch device (web): lean mode with fewer additive blend effects */
 static int glyph_idx[256];
 
 static const char *VS =
@@ -960,7 +961,7 @@ static void draw_voice(int v, float x, float y, float w, float h, const vis_t *v
     int muted = (g_mute >> v) & 1;
     int active = ((vi->ctrl & 1) || vi->level > 0) && vs->running;
     card(x, y, w, h, hit(x, y, w, h));
-    if (glow[v] > 0.01f) {
+    if (!g_mobile && glow[v] > 0.01f) {
         set_additive(1);
         blob(x + w / 2, y + 90, w * 0.45f, alpha(vc, 0.10f * glow[v]));
         set_additive(0);
@@ -1253,7 +1254,8 @@ static void draw_orb(float x, float y, float w, float h, float dtf) {
     float ca = cosf(spin), sa = sinf(spin), ct = cosf(0.42f), st = sinf(0.42f), fz = 8.0f * R;
     set_additive(1);
     blob(cx, cy, R * (0.55f + 0.12f * beat), alpha(VC[0], 0.05f + 0.08f * beat));
-    for (int i = 0; i < orb_n; i++) {
+    int ostep = g_mobile ? 2 : 1;         /* phones: every second dot, slightly bigger */
+    for (int i = 0; i < orb_n; i += ostep) {
         float ux = orb_u[i][0], uy = orb_u[i][1], uz = orb_u[i][2];
         float lat = fabsf(uy), bf = lat * (NBANDS - 1);
         int b0 = (int)bf;
@@ -1271,7 +1273,7 @@ static void draw_orb(float x, float y, float w, float h, float dtf) {
         if (dn > 1) dn = 1;
         col c = e < 0.5f ? mix(VC[0], VC[1], e * 2.0f) : mix(VC[1], VC[2], (e - 0.5f) * 2.0f);
         c = mix(c, C(1, 1, 1, 1), 0.18f * dn);
-        blob(sx, sy, 0.60f + 0.75f * dn + 0.70f * e, alpha(c, (0.13f + 0.62f * dn) * (0.42f + 0.95f * e)));
+        blob(sx, sy, (0.60f + 0.75f * dn + 0.70f * e) * (g_mobile ? 1.3f : 1.0f), alpha(c, (0.13f + 0.62f * dn) * (0.42f + 0.95f * e)));
     }
     set_additive(0);
 }
@@ -1293,15 +1295,27 @@ static void draw_sidebar(float x, float y, float w, float h) {
     }
         card(x, y, w, h, 0);
         float tw1 = text_width("PLAYLIST", 13);
+        if (g_portrait) {                 /* touch: real tab buttons instead of plain text */
+            float tw2 = text_width("HVSC ONLINE", 13);
+            rrect(x + 8, y + 6, tw1 + 20, 30, 8, browse ? alpha(FAINT, 0.16f) : alpha(VC[2], 0.25f));
+            rrect(x + 18 + tw1 + 12, y + 6, tw2 + 20, 30, 8, browse ? alpha(VC[2], 0.25f) : alpha(FAINT, 0.16f));
+        }
         text(x + 18, y + 14, 13, browse ? FAINT : TXT, "PLAYLIST");
         text(x + 18 + tw1 + 22, y + 14, 13, browse ? TXT : FAINT, "HVSC ONLINE");
-        if (sb_click(x + 12, y + 8, tw1 + 16, 26)) { browse = 0; click = 0; }
-        else if (sb_click(x + 18 + tw1 + 14, y + 8, text_width("HVSC ONLINE", 13) + 16, 26)) { browse_open(); click = 0; }
+        if (sb_click(x + 8, y + 6, tw1 + 20, 30)) { browse = 0; click = 0; }
+        else if (sb_click(x + 18 + tw1 + 12, y + 6, text_width("HVSC ONLINE", 13) + 20, 30)) { browse_open(); click = 0; }
+        if (g_portrait) {                 /* second way out of the overlay: close button */
+            float bx = x + w - 42, by2 = y + 6;
+            int hv = hit(bx, by2, 34, 30);
+            rrect(bx, by2, 34, 30, 8, alpha(FAINT, hv ? 0.30f : 0.16f));
+            text(bx + 11, by2 + 7, 14, TXT, "X");
+            if (sb_click(bx - 6, by2, 46, 30)) { g_plopen = 0; click = 0; }
+        }
         int boff = rpath[0] ? 1 : 0;
         int count = browse ? nbe + boff : npl;
         char cnt[32];
         snprintf(cnt, sizeof cnt, "%d", browse ? nbe : npl);
-        text_right(x + w - 18, y + 14, 13, DIM, cnt);
+        text_right(x + w - (g_portrait ? 54 : 18), y + 14, 13, DIM, cnt);
         float ry = y + 44, rh = g_portrait ? 36 : 28, area = h - 44 - 40;
         if (browse) {
             char crumb[800];
@@ -1432,8 +1446,8 @@ static void draw_spectrum_card(float ax, float sy, float spw, float sh) {
             float py = base - bandpk[b] * bh;
             if (bandpk[b] > 0.02f) rect(xx, py - 3, barw, 2, alpha(top, 0.95f));
         }
-        set_additive(1);
-        for (int b = 0; b < NBANDS; b += 2) {
+        if (!g_mobile) set_additive(1);
+        for (int b = 0; !g_mobile && b < NBANDS; b += 2) {
             float u = (float)b / (NBANDS - 1);
             col lo = u < 0.5f ? mix(VC[0], VC[1], u * 2) : mix(VC[1], VC[2], (u - 0.5f) * 2);
             blob(bx + (b + 0.5f) * step, base - band[b] * bh, 14 + band[b] * 10, alpha(lo, 0.10f * band[b]));
@@ -1526,8 +1540,7 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
     float cy0 = hy + hh + M, midh = fy - M - cy0;
 
     if (g_plopen) {
-        draw_sidebar(M, cy0, aw, sy + sh - cy0);
-        click = 0;
+        draw_sidebar(M, cy0, aw, sy + sh - cy0);      /* the transport bar below (LIST!) still gets its click */
     } else {
         /* ---------------- voices + digi, or the orb */
         if (g_orb) draw_orb(M, cy0, aw, midh, (float)dt);
@@ -1641,11 +1654,13 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
         glow[v] += (target - glow[v]) * 0.12f;
         act += glow[v];
     }
-    set_additive(1);
-    blob(W * 0.25f, -30, 380, alpha(VC[0], 0.06f + 0.05f * glow[0]));
-    blob(W * 0.60f, -60, 420, alpha(VC[1], 0.05f + 0.05f * glow[1]));
-    blob(W * 0.92f, H * 0.9f, 380, alpha(VC[2], 0.04f + 0.05f * glow[2]));
-    set_additive(0);
+    if (!g_mobile) {                      /* big glow blobs cost a lot of fill rate: skipped on phones */
+        set_additive(1);
+        blob(W * 0.25f, -30, 380, alpha(VC[0], 0.06f + 0.05f * glow[0]));
+        blob(W * 0.60f, -60, 420, alpha(VC[1], 0.05f + 0.05f * glow[1]));
+        blob(W * 0.92f, H * 0.9f, 380, alpha(VC[2], 0.04f + 0.05f * glow[2]));
+        set_additive(0);
+    }
 
     if (g_portrait) { draw_ui_portrait(vs, t, dt); return; }
     const float M = 16, SB = 288;
@@ -2165,6 +2180,9 @@ int main(int argc, char **argv) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+#ifdef __EMSCRIPTEN__
+    g_mobile = EM_ASM_INT({ return (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ? 1 : 0; });
+#endif
     SDL_AudioSpec want, have;
     SDL_zero(want);
     want.freq = g_rate; want.format = AUDIO_S16SYS; want.channels = 2; want.samples = AUDIO_SAMPLES; want.callback = audio_cb;

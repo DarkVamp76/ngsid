@@ -629,12 +629,17 @@ static int job_fn(void *ud) {
 }
 
 static void job_start(int kind, const char *path) {
+    if (SDL_AtomicGet(&job.state)) return;
 #ifdef __EMSCRIPTEN__
-    (void)kind; (void)path;
-    snprintf(br_msg, sizeof br_msg, "The HVSC browser is not available in the web version yet.");
+    /* no threads in the browser: the job runs right here (synchronous request to the proxy) */
+    job.kind = kind;
+    snprintf(job.path, sizeof job.path, "%s", path);
+    job.res = NULL; job.nres = 0; job.rc = 0;
+    br_msg[0] = 0;
+    SDL_AtomicSet(&job.state, 1);
+    job_fn(NULL);
     return;
 #endif
-    if (SDL_AtomicGet(&job.state)) return;
     job.kind = kind;
     snprintf(job.path, sizeof job.path, "%s", path);
     job.res = NULL; job.nres = 0; job.rc = 0;

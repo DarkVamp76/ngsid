@@ -136,6 +136,7 @@ web: $(WEB_LSP_LIB) $(OBJ_DIR)/version.h
 		HINT="Drop SID files here" \
 		WEB_INC="-I. -Igui -Ilsp -Ibuild $(WEB_LSP_INC)" \
 		WEB_EXTRA="-fexceptions -sDEFAULT_TO_CXX" WEB_LIBS="$(WEB_LSP_LIB)" SRC="$(WEB_SRC)"
+	cp web/hvsc.php build/web/hvsc.php
 
 clean:
 	rm -rf $(OBJ_DIR) ngSid ngsid_test hvsc_test engine_test build-web

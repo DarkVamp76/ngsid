@@ -11,3 +11,4 @@ third_party/
 *.wav
 *.raw
 *.bmp
+build-web/

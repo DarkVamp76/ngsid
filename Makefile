@@ -111,10 +111,36 @@ check: ngsid_test hvsc_test engine_test
 	./hvsc_test
 	./engine_test
 
+# ---- WebAssembly build (Emscripten + the shared ngweb kit checked out next to this folder) ---------------
+# 1) make web-deps   builds libsidplayfp for the browser into build-web/lsp (once)
+# 2) make web        builds build/web/index.html (+ .js/.wasm)
+NGWEB       ?= ../ngweb
+WEB_LSP     = build-web/lsp
+WEB_LSP_LIB = $(WEB_LSP)/src/.libs/libsidplayfp.a
+WEB_LSP_INC = $(subst $(LSP_BUILD),$(WEB_LSP),$(LSP_INC))
+WEB_SRC     = gui/main.c gui/hvsc.c psid.c ngsid.c lsp/engine.cpp lsp/ngsid-emu.cpp lsp/ngsid-builder.cpp
+
+$(WEB_LSP_LIB): $(LSP_TAR)
+	rm -rf $(WEB_LSP) && mkdir -p $(WEB_LSP)
+	test -d $(LSP_SRC) || tar -xzf $(LSP_TAR) -C third_party
+	@# browsers have no threads here: build the resid-fp filter tables in the calling thread
+	sed -i -E 's/^    sidThread thd[A-Za-z]+\((filter[A-Za-z]+)\);/    \1();/; /thd[A-Za-z]+\.join\(\);/d' $(LSP_SRC)/src/builders/residfp-builder/residfp/FilterModelConfig6581.cpp $(LSP_SRC)/src/builders/residfp-builder/residfp/FilterModelConfig8580.cpp
+	cd $(WEB_LSP) && emconfigure ../../$(LSP_SRC)/configure --host=wasm32-unknown-emscripten --disable-shared --enable-static \
+		--without-gcrypt --without-exsid --without-usbsid --disable-tests CXXFLAGS="-O2 -fexceptions"
+	cd $(WEB_LSP) && emmake $(MAKE) -j$$(nproc 2>/dev/null || echo 2)
+
+web-deps: $(WEB_LSP_LIB)
+
+web: $(WEB_LSP_LIB) $(OBJ_DIR)/version.h
+	$(MAKE) -f $(NGWEB)/ngweb.mk APPDIR=$(CURDIR) NAME=ngSid WEB_MA=0 \
+		HINT="Drop SID files here" \
+		WEB_INC="-I. -Igui -Ilsp -Ibuild $(WEB_LSP_INC)" \
+		WEB_EXTRA="-fexceptions -sDEFAULT_TO_CXX" WEB_LIBS="$(WEB_LSP_LIB)" SRC="$(WEB_SRC)"
+
 clean:
-	rm -rf $(OBJ_DIR) ngSid ngsid_test hvsc_test engine_test
+	rm -rf $(OBJ_DIR) ngSid ngsid_test hvsc_test engine_test build-web
 
 distclean: clean
 	rm -rf third_party
 
-.PHONY: all deps install check clean distclean
+.PHONY: all deps install check clean distclean web web-deps

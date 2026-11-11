@@ -264,6 +264,27 @@ int hvsc_list(const char *folder, hvsc_entry **out, int *n) {
     return -1;
 }
 
+
+int hvsc_resolve_id(int id, char *path, size_t cap) {
+#ifdef __EMSCRIPTEN__
+    char num[16];
+    snprintf(num, sizeof num, "%d", id);
+    const char *tmp = "/tmp/ngsid-hvsc-id.txt";
+    if (id <= 0 || web_get("id", num, tmp) < 0) return -1;
+    FILE *f = fopen(tmp, "rb");
+    if (!f) return -1;
+    size_t n = fread(path, 1, cap - 1, f);
+    fclose(f);
+    unlink(tmp);
+    path[n] = 0;
+    while (n && (path[n - 1] == '\n' || path[n - 1] == '\r' || path[n - 1] == ' ')) path[--n] = 0;
+    return (n && safe_path(path)) ? 0 : -1;
+#else
+    (void)id; (void)path; (void)cap;
+    return -1;
+#endif
+}
+
 /* ---------------------------------------------------------------- download */
 
 int hvsc_fetch(const char *file, char *cache_path, size_t cap) {

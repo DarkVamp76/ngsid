@@ -1,3 +1,4 @@
+#include <exception>
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "engine.h"
 #include "ngsid-builder.h"
@@ -22,7 +23,7 @@ struct engine {
     bool failed = false;
 };
 
-engine *engine_create(const uint8_t *buf, size_t len, int song, int rate, const ngsid_config *cfg,
+static engine *engine_create_impl(const uint8_t *buf, size_t len, int song, int rate, const ngsid_config *cfg,
                       const engine_opts *opts, char *err, size_t errlen)
 {
     auto fail = [&](const char *msg) -> engine * {
@@ -84,6 +85,19 @@ engine *engine_create(const uint8_t *buf, size_t len, int song, int rate, const 
         return fail(m.c_str());
     }
     return e;
+}
+
+engine *engine_create(const uint8_t *buf, size_t len, int song, int rate, const ngsid_config *cfg,
+                      const engine_opts *opts, char *err, size_t errlen)
+{
+    try {
+        return engine_create_impl(buf, len, song, rate, cfg, opts, err, errlen);
+    } catch (const std::exception &x) {
+        fprintf(stderr, "engine exception: %s\n", x.what()); if (err && errlen) snprintf(err, errlen, "exception: %s", x.what());
+    } catch (...) {
+        fprintf(stderr, "engine: unknown exception\n"); if (err && errlen) snprintf(err, errlen, "unknown exception");
+    }
+    return nullptr;
 }
 
 void engine_destroy(engine *e)

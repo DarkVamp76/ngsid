@@ -13,6 +13,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 static const char *const MIRRORS[] = {
     "https://hvsc.brona.dk/HVSC/C64Music/",
@@ -135,6 +138,38 @@ static int run_curl(const char *url, const char *outfile, char **buf, size_t *le
     return 0;
 }
 
+
+#ifdef __EMSCRIPTEN__
+/* Browser: no fork/curl. A synchronous XMLHttpRequest asks the same-origin PHP proxy (hvsc.php) and the
+ * answer is written into the in-memory file system, from where the normal C code reads it. */
+static int web_get(const char *kind, const char *path, const char *outfile) {
+    char enc[1100];
+    url_encode(path, enc, sizeof enc);
+    /* note: no top-level commas in the JS body (the C preprocessor would split the macro arguments there) */
+    return EM_ASM_INT({
+        function str(p) { var r = ''; for (var c; (c = HEAPU8[p++]);) r += String.fromCharCode(c); return r; }
+        try {
+            var kind = str($0);
+            var path = decodeURIComponent(str($1));
+            var out = decodeURIComponent(escape(str($2)));
+            var x = new XMLHttpRequest();
+            x.open('GET', (window.NGWEB_HVSC_URL || 'hvsc.php') + '?' + kind + '=' + encodeURIComponent(path), false);
+            x.overrideMimeType('text/plain; charset=x-user-defined');
+            x.send(null);
+            if (x.status !== 200) return -1;
+            var s = x.responseText;
+            var n = s.length;
+            var b = new Uint8Array(n);
+            for (var i = 0; i < n; i++) b[i] = s.charCodeAt(i) & 255;
+            var d = out.substring(0, out.lastIndexOf('/'));
+            if (d) FS.mkdirTree(d);
+            FS.writeFile(out, b);
+            return n;
+        } catch (e) { return -1; }
+    }, kind, enc, outfile);
+}
+#endif
+
 /* ---------------------------------------------------------------- listing */
 
 static int cmp_entry(const void *a, const void *b) {
@@ -181,11 +216,35 @@ int hvsc_parse_listing(const char *html, size_t len, hvsc_entry **out, int *n) {
 
 int hvsc_http_get(const char *url, char **buf, size_t *len) {
     *buf = NULL; *len = 0;
+#ifdef __EMSCRIPTEN__
+    (void)url;
+    return -1;
+#endif
     return run_curl(url, NULL, buf, len);
 }
 
 int hvsc_list(const char *folder, hvsc_entry **out, int *n) {
     if (!safe_path(folder)) return -1;
+#ifdef __EMSCRIPTEN__
+    {
+        const char *tmp = "/tmp/ngsid-hvsc-list.html";
+        if (web_get("list", folder, tmp) < 0) return -1;
+        FILE *f = fopen(tmp, "rb");
+        if (!f) return -1;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz <= 0 || (size_t)sz > MAX_BODY) { fclose(f); return -1; }
+        char *buf = (char *)malloc((size_t)sz);
+        size_t got = buf ? fread(buf, 1, (size_t)sz, f) : 0;
+        fclose(f);
+        unlink(tmp);
+        if (!buf || got != (size_t)sz) { free(buf); return -1; }
+        int rc = hvsc_parse_listing(buf, got, out, n);
+        free(buf);
+        return rc;
+    }
+#endif
     char enc[1024];
     url_encode(folder, enc, sizeof enc);
     int rc = -1;
@@ -217,6 +276,9 @@ int hvsc_fetch(const char *file, char *cache_path, size_t cap) {
     if ((size_t)snprintf(cache_path, cap, "%s/%s", base, file) >= cap) return -1;
     struct stat st;
     if (!stat(cache_path, &st) && st.st_size > 0) return 0;
+#ifdef __EMSCRIPTEN__
+    return web_get("file", file, cache_path) > 0 ? 0 : -1;
+#endif
     char dirs[1100];
     snprintf(dirs, sizeof dirs, "%s", cache_path);
     if (mkdir_p(dirs)) return -1;

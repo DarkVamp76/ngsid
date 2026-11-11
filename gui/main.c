@@ -531,12 +531,31 @@ static void add_path(const char *path, int depth) {
         add_file(path);
 }
 
+#ifdef __EMSCRIPTEN__
+/* address bar = shareable link of the tune that plays (HVSC path), or no hash for local files.
+ * replaceState does not fire hashchange, so this never reloads anything. */
+static void web_set_url(const char *rel) {
+    EM_ASM({
+        var r = '';
+        var p = $0;
+        var c;
+        if (p) { while ((c = HEAPU8[p++])) r += String.fromCharCode(c); }
+        try {
+            history.replaceState(null, '', r ? '#/' + encodeURI(decodeURIComponent(escape(r))) : location.pathname + location.search);
+        } catch (e) {}
+    }, rel);
+}
+#endif
+
 static void play_index(int idx, int song) {
     if (idx < 0 || idx >= npl) return;
     cur = idx;
     list_follow = 1;
     tune_load(pl[idx].path, song, NULL);
     cur_song = g_tune ? g_tune->song : 1;
+#ifdef __EMSCRIPTEN__
+    web_set_url(pl[idx].rel);
+#endif
 }
 
 /* ---- online HVSC browser: folder listings and tunes are fetched by a worker thread */
@@ -684,16 +703,6 @@ static void job_poll(void) {
             if (idx < 0) { add_file(job.file); idx = npl - 1; }
             if (!pl[idx].rel) pl[idx].rel = strdup(job.path);
             play_index(idx, 0);
-#ifdef __EMSCRIPTEN__
-            /* address bar = link to this tune (replaceState does not fire hashchange) */
-            EM_ASM({
-                var r = '';
-                var p = $0;
-                var c;
-                while ((c = HEAPU8[p++])) r += String.fromCharCode(c);
-                try { history.replaceState(null, '', '#/' + encodeURI(decodeURIComponent(escape(r)))); } catch (e) {}
-            }, job.path);
-#endif
         }
     } else {
         free(job.res);
@@ -1303,8 +1312,14 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
                 snprintf(lab, sizeof lab, "%s%s", tmp, en->dir ? "/" : "");
                 isdir = en->dir;
             }
-            fit_text(lab, w - 52, 14);
-            text(x + 20, yy + 5, 14, isc || isdir ? TXT : DIM, lab);
+            float lx = x + 20, lw = w - 52;
+            if (!browse && pl[i].rel) {          /* tune that came from the online HVSC */
+                rrect(lx, yy + 6, 26, 17, 4, alpha(VC[2], isc ? 0.32f : 0.20f));
+                text(lx + 4, yy + 8, 11, VC[2], "HV");
+                lx += 33; lw -= 33;
+            }
+            fit_text(lab, lw, 14);
+            text(lx, yy + 5, 14, isc || isdir ? TXT : DIM, lab);
             if (clicked(x + 8, yy, w - 16, rh)) {
                 if (browse) { br_sel = i; browse_activate(i); } else play_index(i, 0);
                 click = 0;

@@ -1155,20 +1155,19 @@ static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
     }
     if (!vs->running) { changes = 0; active = 0; }
     float rate = (float)changes * (float)g_rate / NGSID_BLOCK;
-    text(x + 16, y + 12, 13, DIM, "DIGI CHANNEL");
-    if (src >= 0) {
+    const int compact = h < 80;           /* portrait: everything has to fit into a 46..64 px card */
+    text(x + 16, y + (compact ? 8 : 12), 13, DIM, "DIGI CHANNEL");
+    {
         char sb[40];
         snprintf(sb, sizeof sb, "voice %d oscillator", src + 1);
-        text(x + 16, y + 30, 11, FAINT, "Samples via the");
-        text(x + 16, y + 44, 11, FAINT, sb);
-    } else {
-        text(x + 16, y + 30, 11, FAINT, "Samples via the");
-        text(x + 16, y + 44, 11, FAINT, "volume register");
+        if (!compact) text(x + 16, y + 30, 11, FAINT, "Samples via the");
+        if (!compact || !active) text(x + 16, y + (compact ? 26 : 44), 11, FAINT, src >= 0 ? sb : (compact ? "via volume register" : "volume register"));
     }
     char b[48];
     snprintf(b, sizeof b, "%.1f kHz", rate / 1000.0f);
-    text(x + 16, y + 66, 13, alpha(active && !muted ? dc : DIM, active ? 1.0f : 0.5f), active ? b : "--");
-    float lx = x + 130, ly = y + 21;
+    if (compact) { if (active) text(x + 16, y + 26 + 0, 11, alpha(dc, muted ? 0.4f : 1.0f), b); }   /* replaces the description while samples play */
+    else text(x + 16, y + 66, 13, alpha(active && !muted ? dc : DIM, active ? 1.0f : 0.5f), active ? b : "--");
+    float lx = compact ? x + 150 : x + 130, ly = y + (compact ? 14 : 21);
     rrect(lx - 6, ly - 6, 12, 12, 6, alpha(FAINT, 0.5f));
     if (active && !muted) { set_additive(1); blob(lx, ly, 10, alpha(dc, 0.55f)); set_additive(0); rrect(lx - 5, ly - 5, 10, 10, 5, dc); }
 
@@ -1536,7 +1535,7 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
     }
 
     /* ---------------- vertical budget */
-    float by = H - M - BOT, sh = 96, sy = by - M - sh, fh = 46, fy = sy - M - fh;
+    float by = H - M - BOT, sh = H < 720 ? 80 : 96, sy = by - M - sh, fh = 46, fy = sy - M - fh;   /* low windows: flatter spectrum card */
     float cy0 = hy + hh + M, midh = fy - M - cy0;
 
     if (g_plopen) {
@@ -1548,9 +1547,10 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
             float dh = 64;
             int rows = nsid == 1 ? 3 : nsid;
             float rhv = (midh - dh - M - gap * (float)(rows - 1)) / (float)rows;
+            if (rhv < 64) { dh = 46; rhv = (midh - dh - M - gap * (float)(rows - 1)) / (float)rows; }   /* tight: smaller digi card */
             float rmax = nsid == 1 ? 120.0f : 90.0f;
             if (rhv > rmax) rhv = rmax;
-            if (rhv < 76) rhv = 76;
+            if (rhv < 60) rhv = 60;
             float vw3 = (aw - 2 * gap) / 3;
             for (int c = 0; c < rows; c++) {
                 if (nsid == 1) {

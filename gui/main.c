@@ -1215,6 +1215,7 @@ static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
 #define ORB_RINGS 78
 #define ORB_LON 132
 #define ORB_MAX 8000
+static int g_portrait, g_plopen;      /* portrait (phones): stacked layout, playlist/browser as overlay */
 static int g_orb;                       /* 1 = orb instead of the voice cards (key V / switch in the filter strip) */
 static float orb_u[ORB_MAX][3];
 static int orb_n;
@@ -1274,47 +1275,33 @@ static void draw_orb(float x, float y, float w, float h, float dtf) {
     set_additive(0);
 }
 
-static void draw_ui(const vis_t *vs, double t, double dt) {
-    float W = view_w, H = view_h;
-    int vol_changed = 0;
-    (void)dt;
-
-    /* background */
-    rect_grad(0, 0, W, H, BG1, BG0);
-    float act = 0;
-    const int nsid = g_tune && g_tune->nsid > 1 ? (g_tune->nsid > 3 ? 3 : g_tune->nsid) : 1;
-    for (int v = 0; v < 3; v++) {
-        float target = 0;
-        for (int c = 0; c < nsid; c++) {
-            float tg = (vs->running && (vs->vi[c][v].ctrl & 1)) ? 1.0f : (vs->running ? vs->vi[c][v].level / 127.0f : 0);
-            if (tg > target) target = tg;
-        }
-        if (g_mute >> v & 1) target = 0;
-        glow[v] += (target - glow[v]) * 0.12f;
-        act += glow[v];
+/* ---- playlist / HVSC browser panel (sidebar in landscape, full overlay in portrait: tap selects, drag scrolls) */
+static int sb_pd, sb_moved, sb_tap, sb_pressed;
+static float sb_py0, sb_sc0;
+static int sb_click(float x, float y, float w, float h) {
+    if (!g_portrait) return clicked(x, y, w, h);
+    return sb_tap && mx >= x && mx < x + w && my >= y && my < y + h;
+}
+static void draw_sidebar(float x, float y, float w, float h) {
+    sb_tap = 0; sb_pressed = 0;
+    if (g_portrait) {
+        if (mouse_down) {
+            if (!sb_pd) { sb_pd = 1; sb_py0 = my; sb_moved = 0; sb_pressed = 1; }
+            if (fabsf(my - sb_py0) > 8) sb_moved = 1;
+        } else if (sb_pd) { sb_pd = 0; if (!sb_moved) sb_tap = 1; }
     }
-    set_additive(1);
-    blob(W * 0.25f, -30, 380, alpha(VC[0], 0.06f + 0.05f * glow[0]));
-    blob(W * 0.60f, -60, 420, alpha(VC[1], 0.05f + 0.05f * glow[1]));
-    blob(W * 0.92f, H * 0.9f, 380, alpha(VC[2], 0.04f + 0.05f * glow[2]));
-    set_additive(0);
-
-    const float M = 16, SB = 288;
-    /* ---------------- playlist sidebar */
-    {
-        float x = M, y = M, w = SB, h = H - 2 * M;
         card(x, y, w, h, 0);
         float tw1 = text_width("PLAYLIST", 13);
         text(x + 18, y + 14, 13, browse ? FAINT : TXT, "PLAYLIST");
         text(x + 18 + tw1 + 22, y + 14, 13, browse ? TXT : FAINT, "HVSC ONLINE");
-        if (clicked(x + 12, y + 8, tw1 + 16, 26)) { browse = 0; click = 0; }
-        else if (clicked(x + 18 + tw1 + 14, y + 8, text_width("HVSC ONLINE", 13) + 16, 26)) { browse_open(); click = 0; }
+        if (sb_click(x + 12, y + 8, tw1 + 16, 26)) { browse = 0; click = 0; }
+        else if (sb_click(x + 18 + tw1 + 14, y + 8, text_width("HVSC ONLINE", 13) + 16, 26)) { browse_open(); click = 0; }
         int boff = rpath[0] ? 1 : 0;
         int count = browse ? nbe + boff : npl;
         char cnt[32];
         snprintf(cnt, sizeof cnt, "%d", browse ? nbe : npl);
         text_right(x + w - 18, y + 14, 13, DIM, cnt);
-        float ry = y + 44, rh = 28, area = h - 44 - 40;
+        float ry = y + 44, rh = g_portrait ? 36 : 28, area = h - 44 - 40;
         if (browse) {
             char crumb[800];
             snprintf(crumb, sizeof crumb, "/%s", rpath);
@@ -1323,6 +1310,8 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             ry += 22; area -= 22 + 18;
         }
         float *sc = browse ? &br_scroll : &list_scroll;
+        if (sb_pressed) sb_sc0 = *sc;
+        if (g_portrait && sb_pd && sb_moved) *sc = sb_sc0 + (sb_py0 - my) / rh;
         int vis_rows = (int)(area / rh);
         int maxscroll = count > vis_rows ? count - vis_rows : 0;
         if (!browse && list_follow && cur >= 0) {
@@ -1383,9 +1372,10 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             }
             fit_text(lab, lw, 14);
             text(lx, yy + 5, 14, isc || isdir ? TXT : DIM, lab);
-            if (clicked(x + 8, yy, w - 16, rh)) {
+            if (sb_click(x + 8, yy, w - 16, rh)) {
                 if (browse) { br_sel = i; browse_activate(i); } else play_index(i, 0);
                 click = 0;
+                if (g_portrait && (!browse || !isdir)) g_plopen = 0;
             }
         }
         if (!browse && !npl) {
@@ -1411,10 +1401,255 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
                 char ub[96];
                 snprintf(ub, sizeof ub, "Update available: %s", upd_tag);
                 text(x + 18, y + h - 48, 12, VC[2], ub);
-                if (clicked(x + 8, y + h - 54, w - 16, 20)) { SDL_OpenURL(upd_url); click = 0; }
+                if (sb_click(x + 8, y + h - 54, w - 16, 20)) { SDL_OpenURL(upd_url); click = 0; }
             }
         }
+}
+
+static void draw_spectrum_card(float ax, float sy, float spw, float sh) {
+    card(ax, sy, spw, sh, 0);
+    text(ax + 18, sy + 12, 12, DIM, "SPECTRUM");
+    {
+        float bx = ax + 18, bw = spw - 36, by0 = sy + 34, bh = (sh - 34 - 36) * 0.74f, base = by0 + bh;
+        for (int g = 0; g <= 4; g++) {
+            float gy = by0 + bh * g / 4.0f;
+            rect(bx, gy, bw, 1, alpha(FAINT, 0.22f));
+        }
+        float step = bw / NBANDS, barw = step * 0.68f;
+        float refl = (sh - 34 - 36) * 0.26f;
+        for (int b = 0; b < NBANDS; b++) {
+            float xx = bx + b * step + (step - barw) / 2;
+            float hh2 = band[b] * bh;
+            float u = (float)b / (NBANDS - 1);
+            col lo = u < 0.5f ? mix(VC[0], VC[1], u * 2) : mix(VC[1], VC[2], (u - 0.5f) * 2);
+            col top = mix(lo, C(1, 1, 1, 1), 0.35f);
+            if (hh2 > 1) {
+                rect_grad(xx, base - hh2, barw, hh2, top, alpha(lo, 0.35f));
+                float rh2 = hh2 * 0.35f < refl ? hh2 * 0.35f : refl;
+                rect_grad(xx, base + 2, barw, rh2, alpha(lo, 0.22f), alpha(lo, 0.0f));
+            }
+            float py = base - bandpk[b] * bh;
+            if (bandpk[b] > 0.02f) rect(xx, py - 3, barw, 2, alpha(top, 0.95f));
+        }
+        set_additive(1);
+        for (int b = 0; b < NBANDS; b += 2) {
+            float u = (float)b / (NBANDS - 1);
+            col lo = u < 0.5f ? mix(VC[0], VC[1], u * 2) : mix(VC[1], VC[2], (u - 0.5f) * 2);
+            blob(bx + (b + 0.5f) * step, base - band[b] * bh, 14 + band[b] * 10, alpha(lo, 0.10f * band[b]));
+        }
+        set_additive(0);
+        static const struct { double f; const char *l; } AX[] = { { 100, "100" }, { 1000, "1k" }, { 10000, "10k" } };
+        for (int i = 0; i < 3; i++) {
+            float xx = bx + bw * (float)(log(AX[i].f / 40.0) / log(17000.0 / 40.0));
+            text(xx - text_width(AX[i].l, 11) / 2, sy + sh - 24, 11, alpha(DIM, 0.8f), AX[i].l);
+        }
     }
+}
+
+static void draw_level_card(float x, float sy, float w, float sh) {
+        card(x, sy, w, sh, 0);
+        text(x + 18, sy + 12, 12, DIM, "LEVEL");
+        float my0 = sy + 34, mh = sh - 34 - 38, mw = 26;
+        enum { SEG = 24 };
+        for (int c = 0; c < 2; c++) {
+            float mxx = x + 22 + c * (mw + 28);
+            float sg = mh / SEG;
+            for (int i = 0; i < SEG; i++) {
+                float lvl = (float)(i + 1) / SEG;
+                float yy = my0 + mh - (i + 1) * sg;
+                col base = lvl > 0.9f ? WARN : (lvl > 0.72f ? VC[2] : OKC);
+                int on = vu[c] >= lvl - 0.5f / SEG;
+                rrect(mxx, yy + 1, mw, sg - 2, 2, alpha(base, on ? 0.95f : 0.12f));
+            }
+            int pi = (int)(vupk[c] * SEG);
+            if (pi > 0 && pi <= SEG) {
+                float lvl = (float)pi / SEG;
+                float yy = my0 + mh - pi * sg;
+                col base = lvl > 0.9f ? WARN : (lvl > 0.72f ? VC[2] : OKC);
+                rrect(mxx, yy + 1, mw, sg - 2, 2, mix(base, C(1, 1, 1, 1), 0.4f));
+            }
+            text(mxx + mw / 2 - 4, sy + sh - 28, 13, DIM, c ? "R" : "L");
+        }
+}
+
+/* ================================================================== portrait layout (phones)
+ * Virtual width 440: header, voices (or orb) + digi, filter strip, spectrum + level, transport with a LIST button. */
+static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
+    (void)t;
+    const float M = 10, BOT = 64, gap = 8;
+    float W = view_w, H = view_h, aw = W - 2 * M;
+    static const tune_t *last_tune;
+    static int auto_done;
+    if (g_tune != last_tune) { last_tune = g_tune; if (g_tune) g_plopen = 0; }
+    if (!auto_done) { auto_done = 1; if (browse && !g_tune) g_plopen = 1; }
+    const tune_t *tn = g_tune;
+    const int nsid = tn && tn->nsid > 1 ? (tn->nsid > 3 ? 3 : tn->nsid) : 1;
+
+    /* ---------------- header */
+    float hy = M, hh = 100;
+    card(M, hy, aw, hh, 0);
+    {
+        char title[160], sub[200];
+        if (tn) {
+            snprintf(title, sizeof title, "%s", tn->info.name[0] ? tn->info.name : (cur >= 0 ? pl[cur].label : ""));
+            snprintf(sub, sizeof sub, "%s%s%s", tn->info.author, tn->info.released[0] ? "  \xb7  " : "", tn->info.released);
+        } else {
+            snprintf(title, sizeof title, "ngSid");
+            snprintf(sub, sizeof sub, "SID player");
+        }
+        float tmax = aw - 32 - 96, tsize = 22;
+        while (tsize > 15 && text_width(title, tsize) > tmax) tsize -= 1;
+        fit_text(title, tmax, tsize);
+        text(M + 16, hy + 10, tsize, TXT, title);
+        fit_text(sub, tmax, 13);
+        if (g_error[0]) text(M + 16, hy + 14 + tsize, 12, WARN, g_error);
+        else text(M + 16, hy + 14 + tsize, 13, DIM, sub);
+        char tb[32];
+        mmss(tb, sizeof tb, (double)vs->frames / g_rate);
+        text_right(M + aw - 16, hy + 10, 28, TXT, tb);
+        if (tn) {
+            char b[48];
+            snprintf(b, sizeof b, "%d / %d", tn->song, tn->info.songs);
+            text_right(M + aw - 16, hy + 44, 13, VC[0], b);
+            if (g_paused) text_right(M + aw - 16, hy + 62, 12, VC[2], "PAUSED");
+            float cx = M + 16, cy = hy + hh - 30;
+            cx += chip(cx, cy, tn->info.rsid ? "RSID" : "PSID", VC[0], 1);
+            cx += chip(cx, cy, tn->pal ? "PAL" : "NTSC", VC[2], 1);
+            if (tn->nsid == 1 && tn->model[0]) { snprintf(b, sizeof b, "MOS %d", tn->model[0]); cx += chip(cx, cy, b, DIM, 1); }
+            else if (tn->nsid > 1) { snprintf(b, sizeof b, "%d SIDs", tn->nsid); cx += chip(cx, cy, b, DIM, 1); }
+        }
+    }
+
+    /* ---------------- vertical budget */
+    float by = H - M - BOT, sh = 96, sy = by - M - sh, fh = 46, fy = sy - M - fh;
+    float cy0 = hy + hh + M, midh = fy - M - cy0;
+
+    if (g_plopen) {
+        draw_sidebar(M, cy0, aw, sy + sh - cy0);
+        click = 0;
+    } else {
+        /* ---------------- voices + digi, or the orb */
+        if (g_orb) draw_orb(M, cy0, aw, midh, (float)dt);
+        else {
+            float dh = 64;
+            int rows = nsid == 1 ? 3 : nsid;
+            float rhv = (midh - dh - M - gap * (float)(rows - 1)) / (float)rows;
+            float rmax = nsid == 1 ? 120.0f : 90.0f;
+            if (rhv > rmax) rhv = rmax;
+            if (rhv < 76) rhv = 76;
+            float vw3 = (aw - 2 * gap) / 3;
+            for (int c = 0; c < rows; c++) {
+                if (nsid == 1) {
+                    draw_voice_compact(0, c, M, cy0 + (float)c * (rhv + gap), aw, rhv, vs);
+                    if (clicked(M, cy0 + (float)c * (rhv + gap), aw, rhv)) { g_mute ^= 1u << c; apply_mute(); click = 0; }
+                } else {
+                    for (int v = 0; v < 3; v++) {
+                        float vx = M + v * (vw3 + gap), vyy = cy0 + (float)c * (rhv + gap);
+                        draw_voice_compact(c, v, vx, vyy, vw3, rhv, vs);
+                        if (clicked(vx, vyy, vw3, rhv)) { g_mute ^= 1u << v; apply_mute(); click = 0; }
+                    }
+                }
+            }
+            float dy = cy0 + (float)rows * rhv + gap * (float)(rows - 1) + M;
+            draw_digi(M, dy, aw, dh, vs);
+            if (clicked(M, dy, aw, dh)) { int ds = digi_source(vs); g_mute ^= ds >= 0 ? 1u << ds : 8u; apply_mute(); click = 0; }
+        }
+
+        /* ---------------- filter strip + VOICES | ORB switch */
+        card(M, fy, aw, fh, 0);
+        {
+            int mode = vs->reg[0x18];
+            float cx = M + 16, cy = fy + 13;
+            text(cx, cy + 1, 12, DIM, "FILTER");
+            cx += 56;
+            cx += chip(cx, cy, "LP", VC[0], (mode & 0x10) != 0);
+            cx += chip(cx, cy, "BP", VC[0], (mode & 0x20) != 0);
+            cx += chip(cx, cy, "HP", VC[0], (mode & 0x40) != 0);
+            float sw = 70, sx0 = M + aw - 14 - 2 * sw;
+            for (int i = 0; i < 2; i++) {
+                float xx = sx0 + i * sw;
+                int on = (i == 1) == (g_orb != 0), hv = hit(xx, cy - 2, sw - 4, 20);
+                rrect(xx, cy - 2, sw - 4, 20, 6, on ? alpha(VC[2], 0.25f) : alpha(FAINT, hv ? 0.30f : 0.16f));
+                const char *l = i ? "ORB" : "VOICES";
+                text(xx + (sw - 4 - text_width(l, 11)) / 2, cy + 2, 11, on ? VC[2] : alpha(DIM, 0.9f), l);
+                if (clicked(xx, cy - 2, sw - 4, 20)) { g_orb = i; click = 0; }
+            }
+        }
+        float vuw = 130, spw = aw - vuw - M;
+        draw_spectrum_card(M, sy, spw, sh);
+        draw_level_card(M + spw + M, sy, vuw, sh);
+    }
+
+    /* ---------------- transport */
+    {
+        float bx = M, bw = aw, cy = by + BOT / 2, r = 20;
+        card(bx, by, bw, BOT, 0);
+        float bxs[3] = { bx + 12, bx + 62, bx + 112 };
+        for (int i = 0; i < 3; i++) {
+            float x = bxs[i];
+            int hv = hit(x, cy - r, 2 * r, 2 * r);
+            rrect(x, cy - r, 2 * r, 2 * r, r, alpha(hv ? VC[0] : EDGE, hv ? 0.30f : 0.35f));
+            col ic = hv ? TXT : DIM;
+            float ccx = x + r, ccy = cy;
+            if (i == 0) { tri(ccx + 6, ccy - 8, ccx + 6, ccy + 8, ccx - 6, ccy, ic); rect(ccx - 9, ccy - 8, 3, 16, ic); }
+            else if (i == 2) { tri(ccx - 6, ccy - 8, ccx - 6, ccy + 8, ccx + 6, ccy, ic); rect(ccx + 6, ccy - 8, 3, 16, ic); }
+            else if (g_paused) tri(ccx - 5, ccy - 9, ccx - 5, ccy + 9, ccx + 9, ccy, ic);
+            else { rect(ccx - 7, ccy - 8, 5, 16, ic); rect(ccx + 2, ccy - 8, 5, 16, ic); }
+            if (clicked(x, cy - r, 2 * r, 2 * r)) {
+                if (i == 0) change_song(-1);
+                else if (i == 2) change_song(1);
+                else g_paused = !g_paused;
+                click = 0;
+            }
+        }
+        {   /* playlist / HVSC overlay on/off */
+            float lx = bx + 166, lw = 58;
+            int hv = hit(lx, cy - 16, lw, 32);
+            rrect(lx, cy - 16, lw, 32, 9, alpha(g_plopen ? VC[2] : (hv ? VC[0] : EDGE), g_plopen ? 0.28f : 0.35f));
+            text(lx + (lw - text_width("LIST", 12)) / 2, cy - 8, 12, g_plopen ? VC[2] : TXT, "LIST");
+            if (clicked(lx, cy - 16, lw, 32)) { g_plopen = !g_plopen; if (g_plopen) list_follow = 1; click = 0; }
+        }
+        float vx = bx + 250, vw = bw - 250 - 22, vyb = cy - 3;
+        rrect(vx, vyb, vw, 6, 3, alpha(FAINT, 0.4f));
+        rrect(vx, vyb, 6 + (vw - 6) * g_vol, 6, 3, VC[0]);
+        rrect(vx + (vw - 6) * g_vol - 3, vyb - 6, 18, 18, 9, TXT);
+        if (clicked(vx - 12, cy - 18, vw + 24, 36)) vol_drag = 1;
+        if (vol_drag) {
+            if (!mouse_down) vol_drag = 0;
+            else { g_vol = (mx - vx) / vw; if (g_vol < 0) g_vol = 0; if (g_vol > 1) g_vol = 1; }
+        }
+    }
+}
+
+static void draw_ui(const vis_t *vs, double t, double dt) {
+    float W = view_w, H = view_h;
+    int vol_changed = 0;
+    (void)dt;
+
+    /* background */
+    rect_grad(0, 0, W, H, BG1, BG0);
+    float act = 0;
+    const int nsid = g_tune && g_tune->nsid > 1 ? (g_tune->nsid > 3 ? 3 : g_tune->nsid) : 1;
+    for (int v = 0; v < 3; v++) {
+        float target = 0;
+        for (int c = 0; c < nsid; c++) {
+            float tg = (vs->running && (vs->vi[c][v].ctrl & 1)) ? 1.0f : (vs->running ? vs->vi[c][v].level / 127.0f : 0);
+            if (tg > target) target = tg;
+        }
+        if (g_mute >> v & 1) target = 0;
+        glow[v] += (target - glow[v]) * 0.12f;
+        act += glow[v];
+    }
+    set_additive(1);
+    blob(W * 0.25f, -30, 380, alpha(VC[0], 0.06f + 0.05f * glow[0]));
+    blob(W * 0.60f, -60, 420, alpha(VC[1], 0.05f + 0.05f * glow[1]));
+    blob(W * 0.92f, H * 0.9f, 380, alpha(VC[2], 0.04f + 0.05f * glow[2]));
+    set_additive(0);
+
+    if (g_portrait) { draw_ui_portrait(vs, t, dt); return; }
+    const float M = 16, SB = 288;
+    /* ---------------- playlist sidebar */
+    draw_sidebar(M, M, SB, H - 2 * M);
 
     float ax = M + SB + M, aw = W - ax - M;
 
@@ -1606,69 +1841,8 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
     float sh = H - M - bot - sy - M;
     if (sh < 120) sh = 120;
     float vuw = 132, spw = aw - vuw - M;
-    card(ax, sy, spw, sh, 0);
-    text(ax + 18, sy + 12, 12, DIM, "SPECTRUM");
-    {
-        float bx = ax + 18, bw = spw - 36, by0 = sy + 34, bh = (sh - 34 - 36) * 0.74f, base = by0 + bh;
-        for (int g = 0; g <= 4; g++) {
-            float gy = by0 + bh * g / 4.0f;
-            rect(bx, gy, bw, 1, alpha(FAINT, 0.22f));
-        }
-        float step = bw / NBANDS, barw = step * 0.68f;
-        float refl = (sh - 34 - 36) * 0.26f;
-        for (int b = 0; b < NBANDS; b++) {
-            float xx = bx + b * step + (step - barw) / 2;
-            float hh2 = band[b] * bh;
-            float u = (float)b / (NBANDS - 1);
-            col lo = u < 0.5f ? mix(VC[0], VC[1], u * 2) : mix(VC[1], VC[2], (u - 0.5f) * 2);
-            col top = mix(lo, C(1, 1, 1, 1), 0.35f);
-            if (hh2 > 1) {
-                rect_grad(xx, base - hh2, barw, hh2, top, alpha(lo, 0.35f));
-                float rh2 = hh2 * 0.35f < refl ? hh2 * 0.35f : refl;
-                rect_grad(xx, base + 2, barw, rh2, alpha(lo, 0.22f), alpha(lo, 0.0f));
-            }
-            float py = base - bandpk[b] * bh;
-            if (bandpk[b] > 0.02f) rect(xx, py - 3, barw, 2, alpha(top, 0.95f));
-        }
-        set_additive(1);
-        for (int b = 0; b < NBANDS; b += 2) {
-            float u = (float)b / (NBANDS - 1);
-            col lo = u < 0.5f ? mix(VC[0], VC[1], u * 2) : mix(VC[1], VC[2], (u - 0.5f) * 2);
-            blob(bx + (b + 0.5f) * step, base - band[b] * bh, 14 + band[b] * 10, alpha(lo, 0.10f * band[b]));
-        }
-        set_additive(0);
-        static const struct { double f; const char *l; } AX[] = { { 100, "100" }, { 1000, "1k" }, { 10000, "10k" } };
-        for (int i = 0; i < 3; i++) {
-            float xx = bx + bw * (float)(log(AX[i].f / 40.0) / log(17000.0 / 40.0));
-            text(xx - text_width(AX[i].l, 11) / 2, sy + sh - 24, 11, alpha(DIM, 0.8f), AX[i].l);
-        }
-    }
-    {
-        float x = ax + spw + M, w = vuw;
-        card(x, sy, w, sh, 0);
-        text(x + 18, sy + 12, 12, DIM, "LEVEL");
-        float my0 = sy + 34, mh = sh - 34 - 38, mw = 26;
-        enum { SEG = 24 };
-        for (int c = 0; c < 2; c++) {
-            float mxx = x + 22 + c * (mw + 28);
-            float sg = mh / SEG;
-            for (int i = 0; i < SEG; i++) {
-                float lvl = (float)(i + 1) / SEG;
-                float yy = my0 + mh - (i + 1) * sg;
-                col base = lvl > 0.9f ? WARN : (lvl > 0.72f ? VC[2] : OKC);
-                int on = vu[c] >= lvl - 0.5f / SEG;
-                rrect(mxx, yy + 1, mw, sg - 2, 2, alpha(base, on ? 0.95f : 0.12f));
-            }
-            int pi = (int)(vupk[c] * SEG);
-            if (pi > 0 && pi <= SEG) {
-                float lvl = (float)pi / SEG;
-                float yy = my0 + mh - pi * sg;
-                col base = lvl > 0.9f ? WARN : (lvl > 0.72f ? VC[2] : OKC);
-                rrect(mxx, yy + 1, mw, sg - 2, 2, mix(base, C(1, 1, 1, 1), 0.4f));
-            }
-            text(mxx + mw / 2 - 4, sy + sh - 28, 13, DIM, c ? "R" : "L");
-        }
-    }
+    draw_spectrum_card(ax, sy, spw, sh);
+    draw_level_card(ax + spw + M, sy, vuw, sh);
 
     /* ---------------- bottom control bar */
     {
@@ -1769,6 +1943,9 @@ EMSCRIPTEN_KEEPALIVE int ng_web_hvsc(const char *what) {
     return 0;
 }
 
+/* canvas size in pixels (portrait layout on phones, see ngweb/shell.html) */
+EMSCRIPTEN_KEEPALIVE void ng_web_size(int w, int h) { if (win && w > 0 && h > 0) SDL_SetWindowSize(win, w, h); }
+
 EMSCRIPTEN_KEEPALIVE void ng_web_add(const char *path) {
     int was = npl;
     add_path(path, 0);
@@ -1834,9 +2011,14 @@ static void iter(void) {
         int ww, wh, dw, dh;
         SDL_GetWindowSize(win, &ww, &wh);
         SDL_GL_GetDrawableSize(win, &dw, &dh);
-        view_scale = (float)dw / 1280.0f;
-        if ((float)dh / 860.0f < view_scale) view_scale = (float)dh / 860.0f;
-        if (view_scale < 0.5f) view_scale = 0.5f;
+        /* portrait (aspect < 0.8) or too small for landscape: narrow stacked layout, virtual width 440 */
+        g_portrait = dw * 10 < dh * 8 || dw < 640 || dh < 430;
+        if (g_portrait) view_scale = (float)dw / 440.0f;
+        else {
+            view_scale = (float)dw / 1280.0f;
+            if ((float)dh / 860.0f < view_scale) view_scale = (float)dh / 860.0f;
+            if (view_scale < 0.5f) view_scale = 0.5f;
+        }
         view_w = (float)dw / view_scale;
         view_h = (float)dh / view_scale;
         int mxi, myi;
@@ -1928,7 +2110,7 @@ int main(int argc, char **argv) {
     win = SDL_CreateWindow("ngSid", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 860,
                                        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (!win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
-    SDL_SetWindowMinimumSize(win, 900, 600);
+    SDL_SetWindowMinimumSize(win, 360, 480);      /* narrow is fine: the portrait layout takes over */
     {
         SDL_Surface *ic = SDL_CreateRGBSurfaceWithFormatFrom((void *)icon_rgba, ICON_W, ICON_H, 32, ICON_W * 4,
                                                              SDL_PIXELFORMAT_RGBA32);
@@ -1936,6 +2118,9 @@ int main(int argc, char **argv) {
     }
 #ifndef __EMSCRIPTEN__
     if (!shot) update_check_start();
+#endif
+#ifdef __EMSCRIPTEN__
+    EM_ASM({ if (window.ngFit) window.ngFit(); });
 #endif
     ctx = SDL_GL_CreateContext(win);
     if (!ctx) { fprintf(stderr, "OpenGL 3.3 context: %s\n", SDL_GetError()); return 1; }

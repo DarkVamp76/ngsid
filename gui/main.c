@@ -1077,11 +1077,12 @@ static void draw_voice_compact(int c, int v, float x, float y, float w, float h,
         snprintf(hzs, sizeof hzs, "%.1f Hz", hz);
     }
     col nc = active && !muted ? mix(TXT, vc, 0.35f) : alpha(FAINT, 1);
-    float ns = tall ? 30 : 24;
-    text(x + 14, y + 21, ns, nc, note);
-    text(x + 14, y + 21 + ns + 3, 11, alpha(DIM, active ? 1.0f : 0.5f), hzs);
+    const int narrow = w < 200;           /* three cards across: smaller note, scope starts further right */
+    float ns = narrow ? 20 : (tall ? 30 : 24);
+    text(x + 14, y + 21 + (narrow ? 4 : 0), ns, nc, note);
+    text(x + 14, y + 21 + ns + 3 + (narrow ? 4 : 0), 11, alpha(DIM, active ? 1.0f : 0.5f), hzs);
     /* mini scope, right of the note */
-    float sx = x + w * 0.45f, sy = y + 24, sw = x + w - 14 - sx, sh = tall ? 40 : 30;
+    float sx = x + w * (narrow ? 0.54f : 0.45f), sy = y + 24, sw = x + w - 14 - sx, sh = tall ? 40 : 30;
     rrect(sx, sy, sw, sh, 6, C(0.03f, 0.04f, 0.07f, 1));
     rect(sx + 4, sy + sh / 2, sw - 8, 1, alpha(FAINT, 0.25f));
     const uint8_t *wv = vs->wave[c][v];

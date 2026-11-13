@@ -29,6 +29,7 @@
 #include <emscripten.h>
 #endif
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <math.h>
@@ -552,6 +553,12 @@ static void play_index(int idx, int song) {
     if (idx < 0 || idx >= npl) return;
     cur = idx;
     list_follow = 1;
+    if (!pl[idx].path[0] && pl[idx].rel) {          /* entry of a folder link: fetched when it is played */
+        char file[512];
+        if (hvsc_fetch(pl[idx].rel, file, sizeof file) != 0) { snprintf(g_error, sizeof g_error, "%s: HVSC unreachable", pl[idx].label); return; }
+        free(pl[idx].path);
+        pl[idx].path = strdup(file);
+    }
     tune_load(pl[idx].path, song, NULL);
     cur_song = g_tune ? g_tune->song : 1;
 #ifdef __EMSCRIPTEN__
@@ -2092,6 +2099,29 @@ EMSCRIPTEN_KEEPALIVE int ng_web_hvsc(const char *what) {
     char path[768];
     const char *p = what;
     while (*p == '/') p++;
+    size_t pn = strlen(p);
+    if (pn > 1 && p[pn - 1] == '/' && !isdigit((unsigned char)p[0])) {      /* "MUSICIANS/N/Nata/": the whole folder becomes the playlist */
+        hvsc_entry *res = NULL;
+        int nres = 0;
+        if (pn >= sizeof path || hvsc_list(p, &res, &nres) != 0) { free(res); snprintf(br_msg, sizeof br_msg, "HVSC unreachable"); return -1; }
+        int first = npl;
+        for (int i = 0; i < nres; i++) {
+            if (res[i].dir || !is_sid_name(res[i].name)) continue;
+            add_file(res[i].name);
+            free(pl[npl - 1].path);
+            pl[npl - 1].path = strdup("");
+            char rel[900];
+            snprintf(rel, sizeof rel, "%s%s", p, res[i].name);
+            pl[npl - 1].rel = strdup(rel);
+        }
+        free(be);
+        be = res; nbe = nres;                                   /* the HVSC browser opens in this folder */
+        snprintf(rpath, sizeof rpath, "%s", p);
+        br_scroll = 0; br_sel = rpath[0] ? 1 : 0; br_follow = 1;
+        browse = 1;
+        if (npl > first) play_index(first, 0); else snprintf(br_msg, sizeof br_msg, "No SID files in this folder");
+        return 0;
+    }
     int digits = *p != 0;
     for (const char *q = p; *q; q++) if (*q < '0' || *q > '9') { digits = 0; break; }
     if (digits) {

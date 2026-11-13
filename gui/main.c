@@ -1311,7 +1311,22 @@ static void ctx_share(void) {
     char enc[1024], url[1100];
     url_enc_path(ctx_rel, enc, sizeof enc);
     snprintf(url, sizeof url, "https://ngsid.org/player/#/%s", enc);
+#ifdef __EMSCRIPTEN__
+    /* SDL's clipboard does not reach the browser clipboard from the main loop: use the async API, with an execCommand fallback */
+    EM_ASM({
+        var t = UTF8ToString($0);
+        var fb = function () {
+            var a = document.createElement('textarea');
+            a.value = t; a.style.position = 'fixed'; a.style.opacity = '0';
+            document.body.appendChild(a); a.focus(); a.select();
+            try { document.execCommand('copy'); } catch (e) {}
+            document.body.removeChild(a);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).catch(fb); else fb();
+    }, url);
+#else
     SDL_SetClipboardText(url);
+#endif
     snprintf(toast_txt, sizeof toast_txt, "Link copied"); toast_t = 2.0f;
 }
 static void ctx_info(void) {                                       /* the tune on DeepSID (composer, STIL info, song list) */

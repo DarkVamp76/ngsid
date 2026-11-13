@@ -858,6 +858,12 @@ static const char *NOTE[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#",
 
 static float mx, my;
 static int click, clickx, clicky, mouse_down, vol_drag;
+static int rclick, rclickx, rclicky;                       /* right mouse button */
+static int ctx_on; static float ctx_x, ctx_y; static char ctx_rel[800];   /* context menu (Share / Info) of an HVSC tune */
+static float toast_t; static char toast_txt[48];
+#define CTX_W 120.0f
+#define CTX_H 62.0f
+#define CTX_ROW 30.0f
 static int hit(float x, float y, float w, float h) { return mx >= x && mx < x + w && my >= y && my < y + h; }
 static int clicked(float x, float y, float w, float h) { return click && clickx >= x && clickx < x + w && clicky >= y && clicky < y + h; }
 
@@ -1281,15 +1287,72 @@ static void draw_orb(float x, float y, float w, float h, float dtf) {
 static int sb_pd, sb_moved, sb_tap, sb_pressed;
 static float sb_py0, sb_sc0;
 static int sb_click(float x, float y, float w, float h) {
-    if (!g_portrait) return clicked(x, y, w, h);
+    if (!g_portrait && !g_mobile) return clicked(x, y, w, h);
     return sb_tap && mx >= x && mx < x + w && my >= y && my < y + h;
+}
+/* ---- Share / Info: right click on an HVSC tune (playlist entry fetched online, or a file in the HVSC browser) */
+static void url_enc_path(const char *in, char *out, size_t cap) {    /* percent-encode everything except unreserved characters and '/' */
+    size_t o = 0;
+    for (; *in && o + 4 < cap; in++) {
+        unsigned char c = (unsigned char)*in;
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~' || c == '/') out[o++] = (char)c;
+        else { snprintf(out + o, 4, "%%%02X", c); o += 3; }
+    }
+    out[o] = 0;
+}
+static void open_url(const char *url) {
+#ifdef __EMSCRIPTEN__
+    EM_ASM({ window.open(UTF8ToString($0), '_blank'); }, url);
+#else
+    SDL_OpenURL(url);
+#endif
+}
+static void ctx_share(void) {
+    char enc[1024], url[1100];
+    url_enc_path(ctx_rel, enc, sizeof enc);
+    snprintf(url, sizeof url, "https://ngsid.org/player/#/%s", enc);
+    SDL_SetClipboardText(url);
+    snprintf(toast_txt, sizeof toast_txt, "Link copied"); toast_t = 2.0f;
+}
+static void ctx_info(void) {                                       /* the tune on DeepSID (composer, STIL info, song list) */
+    char enc[1024], url[1100];
+    url_enc_path(ctx_rel, enc, sizeof enc);
+    snprintf(url, sizeof url, "https://deepsid.chordian.net/?file=/%s", enc);
+    open_url(url);
+}
+static void ctx_open(const char *rel) {
+    snprintf(ctx_rel, sizeof ctx_rel, "%s", rel);
+    ctx_on = 1; rclick = 0;
+    ctx_x = (float)rclickx; ctx_y = (float)rclicky;
+    if (ctx_x + CTX_W > view_w - 4) ctx_x = view_w - 4 - CTX_W;
+    if (ctx_y + CTX_H > view_h - 4) ctx_y = view_h - 4 - CTX_H;
+}
+static void draw_ctx_menu(double dt) {
+    if (ctx_on) {
+        static const char *const item[2] = { "Share", "Info" };
+        rrect(ctx_x - 1, ctx_y - 1, CTX_W + 2, CTX_H + 2, 9, alpha(EDGE, 0.9f));
+        rrect(ctx_x, ctx_y, CTX_W, CTX_H, 8, CARDHI);
+        for (int j = 0; j < 2; j++) {
+            float iy = ctx_y + 1 + j * CTX_ROW;
+            int hv = mx >= ctx_x && mx < ctx_x + CTX_W && my >= iy && my < iy + CTX_ROW;
+            if (hv) rrect(ctx_x + 3, iy + 2, CTX_W - 6, CTX_ROW - 4, 6, alpha(VC[0], 0.22f));
+            text(ctx_x + 14, iy + 7, 14, hv ? TXT : DIM, item[j]);
+        }
+    }
+    if (toast_t > 0) {
+        toast_t -= (float)dt;
+        float w = text_width(toast_txt, 14) + 32, x = (view_w - w) / 2, y = view_h - 70;
+        rrect(x, y, w, 32, 10, alpha(CARDHI, 0.96f));
+        text(x + 16, y + 8, 14, OKC, toast_txt);
+    }
 }
 static void draw_sidebar(float x, float y, float w, float h) {
     sb_tap = 0; sb_pressed = 0;
-    if (g_portrait) {
+    const int touch = g_portrait || g_mobile;        /* touch: drag scrolls, a tap (no drag) selects */
+    if (touch) {
         if (mouse_down) {
-            if (!sb_pd) { sb_pd = 1; sb_py0 = my; sb_moved = 0; sb_pressed = 1; }
-            if (fabsf(my - sb_py0) > 8) sb_moved = 1;
+            if (!sb_pd && mx >= x && mx < x + w && my >= y && my < y + h) { sb_pd = 1; sb_py0 = my; sb_moved = 0; sb_pressed = 1; }
+            if (sb_pd && fabsf(my - sb_py0) > 8) sb_moved = 1;
         } else if (sb_pd) { sb_pd = 0; if (!sb_moved) sb_tap = 1; }
     }
         card(x, y, w, h, 0);
@@ -1315,7 +1378,7 @@ static void draw_sidebar(float x, float y, float w, float h) {
         char cnt[32];
         snprintf(cnt, sizeof cnt, "%d", browse ? nbe : npl);
         text_right(x + w - (g_portrait ? 54 : 18), y + 14, 13, DIM, cnt);
-        float ry = y + 44, rh = g_portrait ? 36 : 28, area = h - 44 - 40;
+        float ry = y + 44, rh = touch ? 36 : 28, area = h - 44 - 40;
         if (browse) {
             char crumb[800];
             snprintf(crumb, sizeof crumb, "/%s", rpath);
@@ -1325,7 +1388,7 @@ static void draw_sidebar(float x, float y, float w, float h) {
         }
         float *sc = browse ? &br_scroll : &list_scroll;
         if (sb_pressed) sb_sc0 = *sc;
-        if (g_portrait && sb_pd && sb_moved) *sc = sb_sc0 + (sb_py0 - my) / rh;
+        if (touch && sb_pd && sb_moved) *sc = sb_sc0 + (sb_py0 - my) / rh;
         int vis_rows = (int)(area / rh);
         int maxscroll = count > vis_rows ? count - vis_rows : 0;
         if (!browse && list_follow && cur >= 0) {
@@ -1386,6 +1449,10 @@ static void draw_sidebar(float x, float y, float w, float h) {
             }
             fit_text(lab, lw, 14);
             text(lx, yy + 5, 14, isc || isdir ? TXT : DIM, lab);
+            if (rclick && rclickx >= x + 8 && rclickx < x + w - 8 && rclicky >= yy && rclicky < yy + rh) {
+                if (!browse && pl[i].rel) ctx_open(pl[i].rel);
+                else if (browse && i >= boff && !be[i - boff].dir) { char rel[800]; snprintf(rel, sizeof rel, "%s%s", rpath, be[i - boff].name); ctx_open(rel); }
+            }
             if (sb_click(x + 8, yy, w - 16, rh)) {
                 if (browse) { br_sel = i; browse_activate(i); } else play_index(i, 0);
                 click = 0;
@@ -1971,11 +2038,12 @@ EMSCRIPTEN_KEEPALIVE void ng_web_add(const char *path) {
 
 static void iter(void) {
         SDL_Event e;
-        click = 0;
+        click = 0; rclick = 0;
         while (SDL_PollEvent(&e)) {
             switch (e.type) {
             case SDL_QUIT: running = 0; break;
             case SDL_MOUSEBUTTONDOWN:
+                if (e.button.button == SDL_BUTTON_RIGHT) { rclick = 1; rclickx = (int)e.button.x; rclicky = (int)e.button.y; }
                 if (e.button.button == SDL_BUTTON_LEFT) { click = 1; clickx = (int)e.button.x; clicky = (int)e.button.y; mouse_down = 1; }
                 break;
             case SDL_MOUSEBUTTONUP: if (e.button.button == SDL_BUTTON_LEFT) mouse_down = 0; break;
@@ -2028,8 +2096,11 @@ static void iter(void) {
         SDL_GetWindowSize(win, &ww, &wh);
         SDL_GL_GetDrawableSize(win, &dw, &dh);
         /* portrait (aspect < 0.8) or too small for landscape: narrow stacked layout, virtual width 440 */
-        g_portrait = dw * 10 < dh * 8 || dw < 640 || dh < 430;
-        if (g_portrait) view_scale = (float)dw / 440.0f;
+        g_portrait = dw * 10 < dh * 12 || dw < 640 || dh < 430;      /* aspect < 1.2: tablets upright, phones */
+        if (g_portrait) {                                              /* virtual width 440, but at least 640 high (tablets are wider than phones) */
+            view_scale = (float)dw / 440.0f;
+            if ((float)dh / 640.0f < view_scale) view_scale = (float)dh / 640.0f;
+        }
         else {
             view_scale = (float)dw / 1280.0f;
             if ((float)dh / 860.0f < view_scale) view_scale = (float)dh / 860.0f;
@@ -2043,6 +2114,14 @@ static void iter(void) {
         float k = ww ? (float)dw / (float)ww / view_scale : 1;
         mx = (float)mxi * k; my = (float)myi * k;
         if (click) { clickx = (int)(clickx * k); clicky = (int)(clicky * k); }
+        if (rclick) { rclickx = (int)(rclickx * k); rclicky = (int)(rclicky * k); }
+        if (ctx_on && click) {                               /* click on the open menu: Share / Info; any click closes it */
+            if (clickx >= ctx_x && clickx < ctx_x + CTX_W && clicky >= ctx_y && clicky < ctx_y + CTX_H) {
+                if (clicky < ctx_y + 1 + CTX_ROW) ctx_share(); else ctx_info();
+            }
+            ctx_on = 0; click = 0;
+        }
+        if (rclick && ctx_on) ctx_on = 0;
 
         job_poll();
         Uint64 now = SDL_GetPerformanceCounter();
@@ -2067,6 +2146,7 @@ static void iter(void) {
         glBindVertexArray(vao);
         glBindTexture(GL_TEXTURE_2D, fonttex);
         draw_ui(&snap, (double)(now - t0) / freq, dt);
+        draw_ctx_menu(dt);
         set_additive(0);
         flush();
         if (shot && ++frame >= shot_frames) {

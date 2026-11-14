@@ -1547,7 +1547,7 @@ static void draw_sidebar(float x, float y, float w, float h) {
             text(lx, yy + 5, 14, isc || isdir ? TXT : DIM, lab);
             if (rclick && rclickx >= x + 8 && rclickx < x + w - 8 && rclicky >= yy && rclicky < yy + rh) {
                 if (!browse && pl[i].rel) ctx_open(pl[i].rel);
-                else if (browse && i >= boff && !be[i - boff].dir) { char rel[800]; snprintf(rel, sizeof rel, "%s%s", rpath, be[i - boff].name); ctx_open(rel); }
+                else if (browse && i >= boff) { char rel[800]; snprintf(rel, sizeof rel, "%s%s%s", rpath, be[i - boff].name, be[i - boff].dir ? "/" : ""); ctx_open(rel); }   /* a folder shares as #/PATH/ */
             }
             if (sb_click(x + 8, yy, w - 16, rh)) {
                 if (browse) { br_sel = i; browse_activate(i); } else play_index(i, 0);

@@ -768,6 +768,14 @@ static void change_file(int delta) {
     play_index(((cur + delta) % npl + npl) % npl, 0);
 }
 
+/* transport buttons: next/previous sub tune, and when there is none left (or the file has only one) the next/previous file of the list */
+static void step_tune(int delta) {
+    int n = g_tune ? g_tune->info.songs : 1;
+    if (delta > 0 && cur_song < n) change_song(1);
+    else if (delta < 0 && cur_song > 1) change_song(-1);
+    else change_file(delta);
+}
+
 /* ================================================================== analysis helpers */
 
 static void fft(double *re, double *im, int n) {
@@ -1354,6 +1362,8 @@ static void draw_orb(float x, float y, float w, float h, float dtf) {
 
 /* ---- playlist / HVSC browser panel (sidebar in landscape, full overlay in portrait: tap selects, drag scrolls) */
 static int sb_pd, sb_moved, sb_tap, sb_pressed;
+static int lp_on, lp_fired, lp_swallow, lp_x, lp_y;     /* long press on a touch screen = right click */
+static Uint32 lp_t;
 static float sb_py0, sb_sc0;
 static int sb_click(float x, float y, float w, float h) {
     if (!g_portrait && !g_mobile) return clicked(x, y, w, h);
@@ -1408,6 +1418,8 @@ static void ctx_open(const char *rel) {
     snprintf(ctx_rel, sizeof ctx_rel, "%s", rel);
     ctx_on = 1; rclick = 0;
     ctx_x = (float)rclickx; ctx_y = (float)rclicky;
+    if (g_mobile || g_portrait) ctx_y -= CTX_H + 18;          /* touch: the menu opens above the finger */
+    if (ctx_y < 4) ctx_y = 4;
     if (ctx_x + CTX_W > view_w - 4) ctx_x = view_w - 4 - CTX_W;
     if (ctx_y + CTX_H > view_h - 4) ctx_y = view_h - 4 - CTX_H;
 }
@@ -1437,7 +1449,7 @@ static void draw_sidebar(float x, float y, float w, float h) {
         if (mouse_down) {
             if (!sb_pd && mx >= x && mx < x + w && my >= y && my < y + h) { sb_pd = 1; sb_py0 = my; sb_moved = 0; sb_pressed = 1; }
             if (sb_pd && fabsf(my - sb_py0) > 8) sb_moved = 1;
-        } else if (sb_pd) { sb_pd = 0; if (!sb_moved) sb_tap = 1; }
+        } else if (sb_pd) { sb_pd = 0; if (!sb_moved && !lp_swallow) sb_tap = 1; lp_swallow = 0; }
     }
         card(x, y, w, h, 0);
         float tw1 = text_width("PLAYLIST", 13);
@@ -1761,8 +1773,8 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
             else if (g_paused) tri(ccx - 5, ccy - 9, ccx - 5, ccy + 9, ccx + 9, ccy, ic);
             else { rect(ccx - 7, ccy - 8, 5, 16, ic); rect(ccx + 2, ccy - 8, 5, 16, ic); }
             if (clicked(x, cy - r, 2 * r, 2 * r)) {
-                if (i == 0) change_song(-1);
-                else if (i == 2) change_song(1);
+                if (i == 0) step_tune(-1);
+                else if (i == 2) step_tune(1);
                 else g_paused = !g_paused;
                 click = 0;
             }
@@ -2028,8 +2040,8 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             else if (g_paused) tri(ccx - 5, ccy - 9, ccx - 5, ccy + 9, ccx + 9, ccy, ic);
             else { rect(ccx - 7, ccy - 8, 5, 16, ic); rect(ccx + 2, ccy - 8, 5, 16, ic); }
             if (clicked(x, cy - r, 2 * r, 2 * r)) {
-                if (btn[i].kind == 0) change_song(-1);
-                else if (btn[i].kind == 2) change_song(1);
+                if (btn[i].kind == 0) step_tune(-1);
+                else if (btn[i].kind == 2) step_tune(1);
                 else g_paused = !g_paused;
                 click = 0;
             }
@@ -2151,9 +2163,15 @@ static void iter(void) {
             case SDL_QUIT: running = 0; break;
             case SDL_MOUSEBUTTONDOWN:
                 if (e.button.button == SDL_BUTTON_RIGHT) { rclick = 1; rclickx = (int)e.button.x; rclicky = (int)e.button.y; }
-                if (e.button.button == SDL_BUTTON_LEFT) { click = 1; clickx = (int)e.button.x; clicky = (int)e.button.y; mouse_down = 1; }
+                if (e.button.button == SDL_BUTTON_LEFT) {
+                    click = 1; clickx = (int)e.button.x; clicky = (int)e.button.y; mouse_down = 1;
+                    lp_on = (g_mobile || g_portrait); lp_fired = 0; lp_swallow = 0; lp_x = clickx; lp_y = clicky; lp_t = SDL_GetTicks();
+                }
                 break;
-            case SDL_MOUSEBUTTONUP: if (e.button.button == SDL_BUTTON_LEFT) mouse_down = 0; break;
+            case SDL_MOUSEMOTION:
+                if (lp_on && (abs(e.motion.x - lp_x) > 12 || abs(e.motion.y - lp_y) > 12)) lp_on = 0;   /* a drag is no long press */
+                break;
+            case SDL_MOUSEBUTTONUP: if (e.button.button == SDL_BUTTON_LEFT) { mouse_down = 0; lp_on = 0; } break;
             case SDL_MOUSEWHEEL:
                 if (mx < 16 + 288 + 16) { if (browse) br_scroll -= e.wheel.y * 3; else list_scroll -= e.wheel.y * 3; }
                 break;
@@ -2220,6 +2238,10 @@ static void iter(void) {
         mouse_down = (mb & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
         float k = ww ? (float)dw / (float)ww / view_scale : 1;
         mx = (float)mxi * k; my = (float)myi * k;
+        if (lp_on && !lp_fired && SDL_GetTicks() - lp_t >= 500) {      /* held still for half a second: open the menu like a right click */
+            lp_fired = 1; lp_on = 0; lp_swallow = 1;
+            rclick = 1; rclickx = lp_x; rclicky = lp_y;
+        }
         if (click) { clickx = (int)(clickx * k); clicky = (int)(clicky * k); }
         if (rclick) { rclickx = (int)(rclickx * k); rclicky = (int)(rclicky * k); }
         if (ctx_on && click) {                               /* click on the open menu: Share / Info; any click closes it */

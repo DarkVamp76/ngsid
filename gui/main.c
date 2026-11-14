@@ -20,6 +20,7 @@
 #include "../psid.h"
 #include "../lsp/engine.h"
 #include "font_data.h"
+#include "c64img_data.h"
 #include "icon_data.h"
 #include "hvsc.h"
 #include "version.h"
@@ -146,7 +147,7 @@ typedef struct { float x, y, u, v, r, g, b, a, m, p1, p2, p3; } vtx;
 static vtx *vb;
 static int nv;
 static int add_blend;
-static GLuint prog, vao, vbo, fonttex;
+static GLuint prog, vao, vbo, fonttex, c64tex[2];
 static GLint u_res, u_pxs, u_tex;
 
 static float view_w, view_h, view_scale = 1;
@@ -172,6 +173,7 @@ static const char *FS =
     " else if(m==1){ float a=texture(tex,vuv).r; o=vec4(vcol.rgb,vcol.a*a); }\n"
     " else if(m==2){ float d=sdbox(vuv,vpar.yz,vpar.w); o=vec4(vcol.rgb,vcol.a*clamp(0.5-d*pxs,0.0,1.0)); }\n"
     " else if(m==3){ float t=abs(vuv.y); o=vec4(vcol.rgb,vcol.a*exp(-t*t*vpar.y)); }\n"
+    " else if(m==7){ vec4 t=texture(tex,vuv); o=vec4(t.rgb/max(t.a,0.001),t.a*vcol.a); }\n"
     " else if(m==5){ float d=sdbox(vuv,vpar.yz,vpar.w); float a=clamp(1.0-d/vpar.w,0.0,1.0); o=vec4(vcol.rgb,vcol.a*a*a); }\n"
     " else { o=vec4(vcol.rgb,vcol.a*exp(-dot(vuv,vuv)/(2.0*vpar.y*vpar.y))); }\n"
     "}\n";
@@ -227,6 +229,27 @@ static void blob(float cx, float cy, float sigma, col c) {
 }
 static void tri(float x0, float y0, float x1, float y1, float x2, float y2, col c) {
     V(x0, y0, 0, 0, c, 0, 0, 0, 0); V(x1, y1, 0, 0, c, 0, 0, 0, 0); V(x2, y2, 0, 0, c, 0, 0, 0, 0);
+}
+
+/* textured RGBA picture (premultiplied data, un-multiplied in the shader), centred at cx,cy and turned by ang radians clockwise;
+   idx 0 = 6581 C64, 1 = 8580 C64 */
+static void draw_c64(int idx, float cx, float cy, float w, float h, float ang, float a) {
+    flush();
+    glBindTexture(GL_TEXTURE_2D, c64tex[idx]);
+    col c = C(1, 1, 1, a);
+    float co = cosf(ang), si = sinf(ang), px[4], py[4];
+    static const float dx[4] = { -0.5f, 0.5f, -0.5f, 0.5f }, dy[4] = { -0.5f, -0.5f, 0.5f, 0.5f };
+    for (int i = 0; i < 4; i++) { float x = dx[i] * w, y = dy[i] * h; px[i] = cx + x * co - y * si; py[i] = cy + x * si + y * co; }
+    V(px[0], py[0], 0, 0, c, 7, 0, 0, 0); V(px[1], py[1], 1, 0, c, 7, 0, 0, 0); V(px[2], py[2], 0, 1, c, 7, 0, 0, 0);
+    V(px[1], py[1], 1, 0, c, 7, 0, 0, 0); V(px[3], py[3], 1, 1, c, 7, 0, 0, 0); V(px[2], py[2], 0, 1, c, 7, 0, 0, 0);
+    flush();
+    glBindTexture(GL_TEXTURE_2D, fonttex);
+}
+/* is the point inside the picture turned by ang around cx,cy? */
+static int c64_hit(float px, float py, float cx, float cy, float w, float h, float ang) {
+    float co = cosf(ang), si = sinf(ang), x = px - cx, y = py - cy;
+    float u = x * co + y * si, v = -x * si + y * co;
+    return fabsf(u) <= w / 2 && fabsf(v) <= h / 2;
 }
 
 /* soft anti-aliased polyline, xy = n points; w half width in px, k = falloff */
@@ -1899,15 +1922,35 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
 
         float tmax = (nch ? chipL - 16 : ax + aw - 220 + 0) - (ax + 22);
         if (!nch) tmax = aw - 220;
+        /* the C64 that goes with the chip model (6581: transparent purple, 8580: the one with the lit keys): turned 22.5 degrees,
+           right behind the title; a click opens commodore.net */
+        const float c64ang = 0.392699f;                    /* 22.5 degrees */
+        int c64i = tn && tn->model[0] ? (tn->model[0] == 8580 ? 1 : 0) : -1;
+        float c64h = 48, c64w = 0, c64bb = 0;
+        if (c64i >= 0) {
+            c64w = c64h * (c64i ? (float)C64_8580_W / (float)C64_8580_H : (float)C64_6581_W / (float)C64_6581_H);
+            c64bb = c64w * cosf(c64ang) + c64h * sinf(c64ang);      /* width of the turned picture */
+            if (tmax - c64bb < 220) c64i = -1;                   /* no room: keep the title wide */
+            else tmax -= c64bb + 8;
+        }
         float tsize = 32;
         while (tsize > 18 && text_width(title, tsize) > tmax) tsize -= 2;
+        if (c64i >= 0) {          /* drawn first: the title, subtitle and tags stay readable on top of it */
+            float tw = text_width(title, tsize), sw = text_width(sub, 16);      /* right behind the longer of title and subtitle line */
+            if (sw > tw) tw = sw;
+            if (tw > tmax) tw = tmax;
+            float ccx = ax + 22 + tw + 12 + c64bb / 2, ccy = hy + hh / 2 - 1;
+            int hv = c64_hit(mx, my, ccx, ccy, c64w, c64h, c64ang);
+            float grow = hv ? 1.08f : 1.0f;
+            draw_c64(c64i, ccx, ccy, c64w * grow, c64h * grow, c64ang, 1.0f);
+            if (click && c64_hit((float)clickx, (float)clicky, ccx, ccy, c64w, c64h, c64ang)) { open_url("https://commodore.net/computer/"); click = 0; }
+        }
         text(ax + 22, hy + 14, tsize, TXT, title);
         fit_text(sub, tmax, 16);
         text(ax + 22, hy + 14 + tsize + 6, 16, DIM, sub);
 
         float cx = ax + 22, cy = hy + hh - 30;
         for (int i = 0; i < ntag; i++) cx += chip(cx, cy, tag[i], tagc[i], taglit[i]);
-
         if (nch) {
             /* every chip animates on its own: level from its own voices, pulse on its own note onsets */
             static float clvl[3], cbeat[3], pgate[3][3], plvl[3][3];
@@ -2401,6 +2444,18 @@ int main(int argc, char **argv) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenTextures(2, c64tex);
+    for (int i = 0; i < 2; i++) {
+        glBindTexture(GL_TEXTURE_2D, c64tex[i]);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, i ? C64_8580_W : C64_6581_W, i ? C64_8580_H : C64_6581_H, 0, GL_RGBA, GL_UNSIGNED_BYTE, i ? c64_8580_rgba : c64_6581_rgba);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindTexture(GL_TEXTURE_2D, fonttex);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 

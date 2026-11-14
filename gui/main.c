@@ -764,6 +764,21 @@ static void change_song(int delta) {
 }
 
 static void change_file(int delta) {
+    if (browse && nbe) {                       /* HVSC Online is shown: step through the tunes of that folder, not through the playlist */
+        int off = rpath[0] ? 1 : 0, cr = browse_cur_row(), start = cr >= 0 ? cr - off : (delta > 0 ? -1 : nbe), found = -1;
+        for (int k = 1; k <= nbe; k++) {
+            int i = ((start + delta * k) % nbe + nbe) % nbe;
+            if (!be[i].dir) { found = i; break; }
+        }
+        if (found >= 0) {
+            if (SDL_AtomicGet(&job.state)) return;           /* still loading the previous one */
+            char rel[800];
+            snprintf(rel, sizeof rel, "%s%s", rpath, be[found].name);
+            br_sel = found + off; br_follow = 1;
+            job_start(1, rel);
+            return;
+        }
+    }
     if (!npl) return;
     play_index(((cur + delta) % npl + npl) % npl, 0);
 }

@@ -482,7 +482,10 @@ static int tune_load(const char *path, int song, tune_t **out_info) {
     eo.pal_override = g_pal_override;
     eo.sid_model = g_sid_model;
     char emsg[160] = "";
-    t->e = engine_create(t->buf, (size_t)len, song, g_rate, &cfg, &eo, emsg, sizeof emsg);
+    /* RSID with the C64 BASIC flag (header flags bit 1): the tune is a BASIC program, which needs the BASIC ROM. ngSid has no ROMs
+     * (Commodore's are not ours to ship), so nothing would play; say so instead of staying silent. */
+    int basic_tune = t->info.rsid && (t->info.flags & 2);
+    t->e = basic_tune ? NULL : engine_create(t->buf, (size_t)len, song, g_rate, &cfg, &eo, emsg, sizeof emsg);
     if (t->e) {
         t->s = engine_synth(t->e);
         t->nsid = (int)engine_sid_count(t->e);
@@ -492,7 +495,8 @@ static int tune_load(const char *path, int song, tune_t **out_info) {
         for (int i = 0; i < t->nsid; i++) if (t->syn[i]) ngsid_set_voice_mute(t->syn[i], g_mute);
         engine_mute(t->e, g_mute);
     } else {
-        snprintf(g_error, sizeof g_error, "init: %s", emsg);
+        if (basic_tune) snprintf(g_error, sizeof g_error, "Cannot play: a C64 BASIC program, it needs the BASIC ROM (not included)");
+        else snprintf(g_error, sizeof g_error, "init: %s", emsg);
         /* keep the header data for display, but nothing to play */
     }
     if (g_dev) SDL_LockAudioDevice(g_dev);
@@ -1946,8 +1950,14 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             if (click && c64_hit((float)clickx, (float)clicky, ccx, ccy, c64w, c64h, c64ang)) { open_url("https://commodore.net/computer/"); click = 0; }
         }
         text(ax + 22, hy + 14, tsize, TXT, title);
-        fit_text(sub, tmax, 16);
-        text(ax + 22, hy + 14 + tsize + 6, 16, DIM, sub);
+        if (g_error[0]) {       /* in place of the subtitle (author, year), so it never overlaps the line */
+            char em[160]; snprintf(em, sizeof em, "%s", g_error);
+            fit_text(em, tmax, 14);
+            text(ax + 22, hy + 14 + tsize + 6, 14, WARN, em);
+        } else {
+            fit_text(sub, tmax, 16);
+            text(ax + 22, hy + 14 + tsize + 6, 16, DIM, sub);
+        }
 
         float cx = ax + 22, cy = hy + hh - 30;
         for (int i = 0; i < ntag; i++) cx += chip(cx, cy, tag[i], tagc[i], taglit[i]);
@@ -1988,7 +1998,6 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
                              tn->model[i] == 8580 ? C(0.35f, 0.82f, 1.0f, 1) : C(1.0f, 0.62f, 0.28f, 1));
             }
         }
-        if (g_error[0]) text(ax + 22, hy + hh - 54, 13, WARN, g_error);
         /* time + song */
         char tb[32];
         double sec = (double)vs->frames / g_rate;

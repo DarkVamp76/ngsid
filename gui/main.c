@@ -2342,6 +2342,27 @@ static void ios_media_sync(void) {
 }
 #endif
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+/* The HVSC path in a link of ours: .../player/#/MUSICIANS/K/KB/Katakis_Remix.sid, .../t/MUSICIANS/... or ngsid://MUSICIANS/... (decoded, no leading slash). A path ending in
+ * "/" is a folder. The numeric form .../player/#97064 (database id of the HVSC) is only resolved by the web build. 0 = not a link of ours. */
+static int url_hvsc_path(const char *u, char *out, size_t cap) {
+    if (!u || (strncmp(u, "ngsid:", 6) && !(!strncmp(u, "http", 4) && strstr(u, "://ngsid.org/")))) return 0;       /* only the links of our own site and scheme */
+    const char *p = NULL;
+    if (!strncmp(u, "ngsid://", 8)) p = u + 8;
+    else if ((p = strstr(u, "#/")) != NULL) p += 2;
+    else if ((p = strstr(u, "/t/")) != NULL) p += 3;
+    if (!p || !*p) return 0;
+    size_t o = 0;
+    for (; *p && o + 1 < cap; p++) {
+        if (*p == '%' && p[1] && p[2]) { char h[3] = { p[1], p[2], 0 }; out[o++] = (char)strtol(h, NULL, 16); p += 2; }
+        else if (*p == '?') break;
+        else out[o++] = *p;
+    }
+    out[o] = 0;
+    if (!o || strstr(out, "..")) return 0;
+    return 1;
+}
+#endif
 static void iter(void) {
         SDL_Event e;
         click = 0; rclick = 0;
@@ -2363,6 +2384,18 @@ static void iter(void) {
                 if (mx < 16 + 288 + 16) { if (browse) br_scroll -= e.wheel.y * 3; else list_scroll -= e.wheel.y * 3; }
                 break;
             case SDL_DROPFILE: {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+                {   /* iOS: a link that opened the app (Universal Link https://ngsid.org/player/#/MUSICIANS/..., /t/..., or ngsid://...): play the tune / open the folder of the HVSC */
+                    char hp[768];
+                    if (url_hvsc_path(e.drop.file, hp, sizeof hp)) {
+                        SDL_free(e.drop.file);
+                        size_t hl = strlen(hp);
+                        if (hl && hp[hl - 1] == '/') { browse = 1; g_plopen = 1; job_start(0, hp); }       /* a folder */
+                        else job_start(1, hp);                                                                   /* a tune: fetched from the HVSC and played */
+                        break;
+                    }
+                }
+#endif
                 int was = npl;
                 add_path(e.drop.file, 0);
                 SDL_free(e.drop.file);

@@ -26,6 +26,12 @@
 #include "version.h"
 
 #include <SDL2/SDL.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if defined(__EMSCRIPTEN__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+#define NG_GLES 1                      /* OpenGL ES 3: the browser and iOS */
+#endif
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -43,6 +49,10 @@
 /* ================================================================== OpenGL loader */
 #ifdef __EMSCRIPTEN__
 #include <GLES3/gl3.h>
+static int gl_load(void) { return 0; }
+#define GLSL_VERSION "#version 300 es\nprecision highp float;\nprecision highp int;\n"
+#elif defined(NG_GLES)
+#include <OpenGLES/ES3/gl.h>
 static int gl_load(void) { return 0; }
 #define GLSL_VERSION "#version 300 es\nprecision highp float;\nprecision highp int;\n"
 #else
@@ -138,6 +148,18 @@ static int gl_load(void) {
 }
 #endif
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+/* iOS app glue (ios_glue.m in the private app repo): SDL2 has no safe-area API */
+int ios_safe_insets(SDL_Window *win, float *l, float *t, float *r, float *b);
+static volatile int g_bg;                /* the app is in the background: nothing is drawn (iOS does not allow OpenGL there), the sound goes on */
+static int ios_bg_watch(void *ud, SDL_Event *e) {      /* called by SDL on the main thread the moment iOS says so */
+    (void)ud;
+    if (e->type == SDL_APP_WILLENTERBACKGROUND || e->type == SDL_APP_DIDENTERBACKGROUND) g_bg = 1;
+    else if (e->type == SDL_APP_DIDENTERFOREGROUND) g_bg = 0;
+    return 0;
+}
+#endif
+
 /* ================================================================== batched 2D renderer */
 
 typedef struct { float r, g, b, a; } col;
@@ -151,7 +173,7 @@ static GLuint prog, vao, vbo, fonttex, c64tex[2];
 static GLint u_res, u_pxs, u_tex;
 
 static float view_w, view_h, view_scale = 1;
-static int g_mobile;                  /* touch device (web): lean mode with fewer additive blend effects */
+static int g_mobile;                  /* touch device (web, iOS): lean mode with fewer additive blend effects */
 static int glyph_idx[256];
 
 static const char *VS =
@@ -2284,9 +2306,23 @@ static void iter(void) {
             default: break;
             }
         }
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        if (g_bg) { SDL_Delay(100); return; }               /* in the background: no drawing, the sound goes on */
+#endif
         int ww, wh, dw, dh;
         SDL_GetWindowSize(win, &ww, &wh);
         SDL_GL_GetDrawableSize(win, &dw, &dh);
+        int fdw = dw, fdh = dh, vpx = 0, vpy = 0;           /* the whole framebuffer; dw/dh become the part the UI is laid out in */
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        {   /* iOS: keep the UI out of the notch / Dynamic Island, the home bar and the rounded corners (insets in points) */
+            float il, it, ir, ib;
+            if (ww > 0 && wh > 0 && !ios_safe_insets(win, &il, &it, &ir, &ib)) {
+                float kx = (float)fdw / ww, ky = (float)fdh / wh;
+                int l = (int)(il * kx), t = (int)(it * ky), r = (int)(ir * kx), b = (int)(ib * ky);
+                if (l + r < fdw / 3 && t + b < fdh / 3) { vpx = l; vpy = b; dw = fdw - l - r; dh = fdh - t - b; }      /* GL counts from below: the bottom inset is the y offset */
+            }
+        }
+#endif
         /* portrait (aspect < 0.8) or too small for landscape: narrow stacked layout, virtual width 440 */
         g_portrait = dw * 10 < dh * 12 || dw < 640 || dh < 430;      /* aspect < 1.2: tablets upright, phones */
         if (g_portrait) {                                              /* virtual width 440, but at least 640 high (tablets are wider than phones) */
@@ -2303,14 +2339,20 @@ static void iter(void) {
         int mxi, myi;
         Uint32 mb = SDL_GetMouseState(&mxi, &myi);
         mouse_down = (mb & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
-        float k = ww ? (float)dw / (float)ww / view_scale : 1;
-        mx = (float)mxi * k; my = (float)myi * k;
+        float k = ww ? (float)fdw / (float)ww / view_scale : 1;
+        mx = ((float)mxi - (float)vpx / ((float)fdw / (ww ? ww : 1))) * k; my = ((float)myi - (float)(fdh - dh - vpy) / ((float)fdh / (wh ? wh : 1))) * k;
         if (lp_on && !lp_fired && SDL_GetTicks() - lp_t >= 500) {      /* held still for half a second: open the menu like a right click */
             lp_fired = 1; lp_on = 0; lp_swallow = 1;
             rclick = 1; rclickx = lp_x; rclicky = lp_y;
         }
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        /* iOS: the event coordinates know nothing of the safe area: a tap is where the pointer is now (mx, my, already in view units) */
+        if (click) { clickx = (int)mx; clicky = (int)my; }
+        if (rclick) { rclickx = (int)mx; rclicky = (int)my; }
+#else
         if (click) { clickx = (int)(clickx * k); clicky = (int)(clicky * k); }
         if (rclick) { rclickx = (int)(rclickx * k); rclicky = (int)(rclicky * k); }
+#endif
         if (ctx_on && click) {                               /* click on the open menu: Share / Info; any click closes it */
             if (clickx >= ctx_x && clickx < ctx_x + CTX_W && clicky >= ctx_y && clicky < ctx_y + CTX_H) {
                 if (clicky < ctx_y + 1 + CTX_ROW) ctx_share(); else ctx_info();
@@ -2332,9 +2374,10 @@ static void iter(void) {
         if (g_dev) SDL_UnlockAudioDevice(g_dev);
         analyse(&snap, (float)dt);
 
-        glViewport(0, 0, dw, dh);
+        glViewport(0, 0, fdw, fdh);
         glClearColor(BG0.r, BG0.g, BG0.b, 1);
         glClear(GL_COLOR_BUFFER_BIT);
+        glViewport(vpx, vpy, dw, dh);
         glUseProgram(prog);
         glUniform2f(u_res, view_w, view_h);
         glUniform1f(u_pxs, view_scale);
@@ -2388,8 +2431,12 @@ int main(int argc, char **argv) {
     /* keyboard only from the canvas, so HTML inputs of the host page work normally */
     SDL_SetHint(SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT, "#canvas");
 #endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    SDL_SetHint(SDL_HINT_AUDIO_CATEGORY, "playback");          /* iOS: audio session "playback" (the sound goes on with the screen locked, with the background mode "audio") */
+    SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "1");
+#endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
-#ifdef __EMSCRIPTEN__
+#ifdef NG_GLES
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
@@ -2408,7 +2455,7 @@ int main(int argc, char **argv) {
                                                              SDL_PIXELFORMAT_RGBA32);
         if (ic) { SDL_SetWindowIcon(win, ic); SDL_FreeSurface(ic); }
     }
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !(defined(__APPLE__) && TARGET_OS_IPHONE)
     if (!shot) update_check_start();
 #endif
 #ifdef __EMSCRIPTEN__
@@ -2470,6 +2517,10 @@ int main(int argc, char **argv) {
 
 #ifdef __EMSCRIPTEN__
     g_mobile = EM_ASM_INT({ return (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ? 1 : 0; });
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    g_mobile = 1;                                              /* iOS: the touch layout */
+    SDL_AddEventWatch(ios_bg_watch, NULL);
 #endif
     SDL_AudioSpec want, have;
     SDL_zero(want);

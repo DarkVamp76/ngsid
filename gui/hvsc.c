@@ -13,6 +13,9 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -85,6 +88,14 @@ static int mkdir_p(char *path) {
 
 /* ---------------------------------------------------------------- curl */
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+/* iOS: no fork / exec of curl. The app glue (ios_glue.m, NSURLSession) does the request: with outfile the body goes to that file, otherwise into a malloc'd buffer
+ * (at most max_body bytes). 0 = ok, else an error. */
+int ios_http_get(const char *url, const char *outfile, char **buf, size_t *len, int timeout_s, size_t max_body);
+static int run_curl(const char *url, const char *outfile, char **buf, size_t *len) {
+    return ios_http_get(url, outfile, buf, len, 25, MAX_BODY) ? -1 : 0;
+}
+#else
 /* Run curl. With outfile the body goes to that file, otherwise into a malloc'd buffer. */
 static int run_curl(const char *url, const char *outfile, char **buf, size_t *len) {
     int pfd[2] = { -1, -1 };
@@ -137,7 +148,7 @@ static int run_curl(const char *url, const char *outfile, char **buf, size_t *le
     if (rc || !WIFEXITED(st) || WEXITSTATUS(st) != 0) { if (!outfile) { free(*buf); *buf = NULL; } return -1; }
     return 0;
 }
-
+#endif
 
 #ifdef __EMSCRIPTEN__
 /* Browser: no fork/curl. A synchronous XMLHttpRequest asks the same-origin PHP proxy (hvsc.php) and the

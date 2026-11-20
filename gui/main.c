@@ -1723,6 +1723,14 @@ static void draw_level_card(float x, float sy, float w, float sh) {
 
 /* ================================================================== portrait layout (phones)
  * Virtual width 440: header, voices (or orb) + digi, filter strip, spectrum + level, transport with a LIST button. */
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+/* the AirPlay button: a native view over the window (AVRoutePickerView, ios_glue.m); here only its round background is drawn and the place is remembered for the frame */
+static float g_ap_x, g_ap_y, g_ap_r; static int g_ap_seen;
+static void draw_airplay_corner(float cx, float cy, float r) {
+    rrect(cx - r, cy - r, 2 * r, 2 * r, r, C(0.13f, 0.18f, 0.28f, 0.92f));
+    g_ap_x = cx; g_ap_y = cy; g_ap_r = r; g_ap_seen = 1;
+}
+#endif
 static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
     (void)t;
     const float M = 10, BOT = 64, gap = 8;
@@ -2042,6 +2050,9 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             text_right(ax + aw - 22, hy + 66, 16, VC[0], sb);
             if (g_paused) text_right(ax + aw - 22, hy + 88, 13, VC[2], "PAUSED");
         }
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        draw_airplay_corner(ax + aw - 160, hy + hh - 30, 16);      /* landscape: left of the SONG / PAUSED lines, bottom right of the header card */
+#endif
     }
 
     /* ---------------- voice cards */
@@ -2258,12 +2269,6 @@ EMSCRIPTEN_KEEPALIVE void ng_web_add(const char *path) {
 #endif
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
-/* the AirPlay button: a native view over the window (AVRoutePickerView, ios_glue.m); here only its round background is drawn and the place is remembered for the frame */
-static float g_ap_x, g_ap_y, g_ap_r; static int g_ap_seen;
-static void draw_airplay_corner(float cx, float cy, float r) {
-    rrect(cx - r, cy - r, 2 * r, 2 * r, r, C(0.13f, 0.18f, 0.28f, 0.92f));
-    g_ap_x = cx; g_ap_y = cy; g_ap_r = r; g_ap_seen = 1;
-}
 /* The audio output after a change of the route (CarPlay cable out, Bluetooth in ...) or an interruption (call, Siri): the output of SDL does not come back by itself.
  * It is opened again (the tune goes on where it is); if the route fell back to the built-in speaker the player pauses first. A watchdog does the same when a tune should
  * be playing but the audio callback stands still. */
@@ -2613,6 +2618,13 @@ int main(int argc, char **argv) {
     ios_media_setup();
 #endif
 
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    {   /* iOS: the music folder of the app (Documents/Music, visible in the Files app); the HVSC cache goes to Library/Caches */
+        char dp[1024], cp[1100]; const char *h = getenv("HOME");
+        if (!ios_music_dir(dp, sizeof dp)) add_path(dp, 0);
+        if (h && *h) { snprintf(cp, sizeof cp, "%s/Library/Caches", h); setenv("XDG_CACHE_HOME", cp, 1); }
+    }
+#endif
     if (!npl && !shot) {   /* nothing given: look for SID files in ~/Musik, then ~/Music */
         const char *home = getenv("HOME");
         static const char *const dirs[] = { "Musik", "Music" };
@@ -2624,7 +2636,13 @@ int main(int argc, char **argv) {
     }
     if (npl) play_index(0, first_song);
 #ifndef __EMSCRIPTEN__
-    else if (!shot) browse_open();   /* nothing given: start in the online HVSC browser */
+    else if (!shot) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        /* nothing to play: fetch one tune from the HVSC right away (not bundled with the app), the browser opens in the background */
+        job_start(1, "MUSICIANS/F/Feekzoid/A_Tribute_to_Martin_Galway.sid");
+#endif
+        browse_open();   /* nothing given: start in the online HVSC browser */
+    }
 #endif
 
     running = 1;

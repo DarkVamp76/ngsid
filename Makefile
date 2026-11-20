@@ -24,7 +24,7 @@ OBJ_DIR  = build
 SYNTH    = $(OBJ_DIR)/ngsid.o
 PSIDINFO = $(OBJ_DIR)/psid.o
 LSPOBJ   = $(OBJ_DIR)/engine.o $(OBJ_DIR)/ngsid-emu.o $(OBJ_DIR)/ngsid-builder.o
-GUIOBJ   = $(OBJ_DIR)/main.o $(OBJ_DIR)/hvsc.o
+GUIOBJ   = $(OBJ_DIR)/main.o $(OBJ_DIR)/hvsc.o $(OBJ_DIR)/gfx_gl.o
 
 all: ngSid
 
@@ -63,11 +63,14 @@ $(OBJ_DIR)/version.h: FORCE | $(OBJ_DIR)
 
 FORCE:
 
-$(OBJ_DIR)/main.o: gui/main.c gui/font_data.h gui/icon_data.h gui/hvsc.h psid.h ngsid.h lsp/engine.h $(OBJ_DIR)/version.h | $(OBJ_DIR)
+$(OBJ_DIR)/main.o: gui/main.c gui/gfx.h gui/font_data.h gui/icon_data.h gui/hvsc.h psid.h ngsid.h lsp/engine.h $(OBJ_DIR)/version.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -I. -Igui -I$(OBJ_DIR) $$(pkg-config --cflags sdl2) -c -o $@ gui/main.c
 
 $(OBJ_DIR)/hvsc.o: gui/hvsc.c gui/hvsc.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -Igui -c -o $@ gui/hvsc.c
+
+$(OBJ_DIR)/gfx_gl.o: gui/gfx_gl.c gui/gfx.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -Igui $$(pkg-config --cflags sdl2) -c -o $@ gui/gfx_gl.c
 
 $(OBJ_DIR)/engine.o: lsp/engine.cpp lsp/engine.h lsp/ngsid-emu.h lsp/ngsid-builder.h ngsid.h $(LSP_LIB) | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) $(LSP_INC) -I. -Ilsp -c -o $@ lsp/engine.cpp
@@ -118,7 +121,7 @@ NGWEB       ?= ../ngweb
 WEB_LSP     = build-web/lsp
 WEB_LSP_LIB = $(WEB_LSP)/src/.libs/libsidplayfp.a
 WEB_LSP_INC = $(subst $(LSP_BUILD),$(WEB_LSP),$(LSP_INC))
-WEB_SRC     = gui/main.c gui/hvsc.c psid.c ngsid.c lsp/engine.cpp lsp/ngsid-emu.cpp lsp/ngsid-builder.cpp
+WEB_SRC     = gui/main.c gui/hvsc.c gui/gfx_gl.c psid.c ngsid.c lsp/engine.cpp lsp/ngsid-emu.cpp lsp/ngsid-builder.cpp
 
 $(WEB_LSP_LIB): $(LSP_TAR)
 	rm -rf $(WEB_LSP) && mkdir -p $(WEB_LSP)

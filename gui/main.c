@@ -67,6 +67,12 @@ static int ios_bg_watch(void *ud, SDL_Event *e) {      /* called by SDL on the m
     return 0;
 }
 #endif
+#if defined(__APPLE__) && TARGET_OS_OSX
+/* macOS app glue (macos_glue.m in the private app repo): File menu, media keys, Now Playing */
+void mac_setup(void);
+void mac_media_update(const char *title, const char *artist, const char *album, int playing, double pos, double duration);
+int mac_media_poll(void);                                                         /* a remote command: 0 play, 1 pause, 2 next, 3 previous, -1 none */
+#endif
 
 /* ================================================================== batched 2D renderer */
 
@@ -2201,6 +2207,32 @@ static void ios_media_sync(void) {
 }
 #endif
 
+#if defined(__APPLE__) && TARGET_OS_OSX
+/* The Mac app: the media keys and the Now Playing display of the system (title, author, released, tune number, position) */
+static void mac_media_sync(void) {
+    int c; while ((c = mac_media_poll()) >= 0) {
+        if (c == 0) g_paused = 0;
+        else if (c == 1) g_paused = 1;
+        else if (c == 2) step_tune(1);
+        else if (c == 3) step_tune(-1);
+    }
+    static char mt[160], ma[96], mb[96]; static int mp = -1; static Uint32 mt0;
+    char title[160] = "ngSid", artist[96] = "", album[96] = "";
+    const tune_t *tn = g_tune;
+    if (tn) {
+        snprintf(title, sizeof title, "%s", tn->info.name[0] ? tn->info.name : (cur >= 0 ? pl[cur].label : "ngSid"));
+        snprintf(artist, sizeof artist, "%s", tn->info.author);
+        snprintf(album, sizeof album, "%s%sTune %d / %d", tn->info.released, tn->info.released[0] ? "  \xc2\xb7  " : "", tn->song, tn->info.songs);
+    }
+    int now = tn && !g_paused;
+    Uint32 t = SDL_GetTicks();
+    if (now != mp || strcmp(title, mt) || strcmp(artist, ma) || strcmp(album, mb) || t - mt0 > 15000) {
+        mp = now; mt0 = t; snprintf(mt, sizeof mt, "%s", title); snprintf(ma, sizeof ma, "%s", artist); snprintf(mb, sizeof mb, "%s", album);
+        mac_media_update(mt, ma, mb, now, (double)g_vis.frames / g_rate, 0);
+    }
+}
+#endif
+
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 /* The HVSC path in a link of ours: .../player/#/MUSICIANS/K/KB/Katakis_Remix.sid, .../t/MUSICIANS/... or ngsid://MUSICIANS/... (decoded, no leading slash). A path ending in
  * "/" is a folder. The numeric form .../player/#97064 (database id of the HVSC) is only resolved by the web build. 0 = not a link of ours. */
@@ -2299,6 +2331,9 @@ static void iter(void) {
 #if defined(__APPLE__) && TARGET_OS_IPHONE
         ios_media_sync();
         if (g_bg) { SDL_Delay(100); return; }               /* in the background: no drawing, the sound goes on */
+#endif
+#if defined(__APPLE__) && TARGET_OS_OSX
+        mac_media_sync();
 #endif
         int ww, wh, dw, dh;
         SDL_GetWindowSize(win, &ww, &wh);
@@ -2438,7 +2473,7 @@ int main(int argc, char **argv) {
                                                              SDL_PIXELFORMAT_RGBA32);
         if (ic) { SDL_SetWindowIcon(win, ic); SDL_FreeSurface(ic); }
     }
-#if !defined(__EMSCRIPTEN__) && !(defined(__APPLE__) && TARGET_OS_IPHONE)
+#if !defined(__EMSCRIPTEN__) && !(defined(__APPLE__) && TARGET_OS_IPHONE) && !defined(NG_NET_NATIVE)
     if (!shot) update_check_start();
 #endif
 #ifdef __EMSCRIPTEN__
@@ -2470,6 +2505,9 @@ int main(int argc, char **argv) {
     ios_audio_longform();                                      /* after SDL set its audio session: long-form playback, so that AirPlay 2 targets (HomePod) are offered */
     ios_media_setup();
 #endif
+#if defined(__APPLE__) && TARGET_OS_OSX
+    mac_setup();
+#endif
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
     {   /* iOS: the music folder of the app (Documents/Music, visible in the Files app); the HVSC cache goes to Library/Caches */
@@ -2490,7 +2528,7 @@ int main(int argc, char **argv) {
     if (npl) play_index(0, first_song);
 #ifndef __EMSCRIPTEN__
     else if (!shot) {
-#if defined(__APPLE__) && TARGET_OS_IPHONE
+#if (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(NG_NET_NATIVE)
         /* nothing to play: fetch one tune from the HVSC right away (not bundled with the app), the browser opens in the background */
         job_start(1, "MUSICIANS/F/Feekzoid/A_Tribute_to_Martin_Galway.sid");
 #endif

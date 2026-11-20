@@ -88,8 +88,8 @@ static int mkdir_p(char *path) {
 
 /* ---------------------------------------------------------------- curl */
 
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-/* iOS: no fork / exec of curl. The app glue (ios_glue.m, NSURLSession) does the request: with outfile the body goes to that file, otherwise into a malloc'd buffer
+#if (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(NG_NET_NATIVE)
+/* iOS and the sandboxed macOS app (-DNG_NET_NATIVE): no fork / exec of curl. The app glue (NSURLSession) does the request: with outfile the body goes to that file, otherwise into a malloc'd buffer
  * (at most max_body bytes). 0 = ok, else an error. */
 int ios_http_get(const char *url, const char *outfile, char **buf, size_t *len, int timeout_s, size_t max_body);
 static int run_curl(const char *url, const char *outfile, char **buf, size_t *len) {

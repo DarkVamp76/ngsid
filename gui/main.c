@@ -1699,6 +1699,28 @@ static void draw_level_card(float x, float sy, float w, float sh) {
         card(x, sy, w, sh, 0);
         text(x + 18, sy + 12, 12, DIM, "LEVEL");
         float my0 = sy + 34, mh = sh - 34 - 38, mw = 26;
+        if (mh < 48) {   /* a short card (portrait layout): two horizontal meters, the vertical ones would have no height */
+            enum { HS = 14 };
+            float bx = x + 34, bw = w - 34 - 14, sgw = bw / HS, rowh = (sh - 34 - 12) / 2, bh = rowh - 6;
+            if (bh > 18) bh = 18;
+            for (int c = 0; c < 2; c++) {
+                float by = sy + 34 + c * rowh;
+                for (int i = 0; i < HS; i++) {
+                    float lvl = (float)(i + 1) / HS;
+                    col base = lvl > 0.9f ? WARN : (lvl > 0.72f ? VC[2] : OKC);
+                    int on = vu[c] >= lvl - 0.5f / HS;
+                    rrect(bx + i * sgw + 0.5f, by, sgw - 1.5f, bh, 2, alpha(base, on ? 0.95f : 0.12f));
+                }
+                int pi = (int)(vupk[c] * HS);
+                if (pi > 0 && pi <= HS) {
+                    float lvl = (float)pi / HS;
+                    col base = lvl > 0.9f ? WARN : (lvl > 0.72f ? VC[2] : OKC);
+                    rrect(bx + (pi - 1) * sgw + 0.5f, by, sgw - 1.5f, bh, 2, mix(base, C(1, 1, 1, 1), 0.4f));
+                }
+                text(x + 16, by + bh / 2 - 7, 13, DIM, c ? "R" : "L");
+            }
+            return;
+        }
         enum { SEG = 24 };
         for (int c = 0; c < 2; c++) {
             float mxx = x + 22 + c * (mw + 28);

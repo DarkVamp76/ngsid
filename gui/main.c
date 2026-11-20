@@ -151,6 +151,14 @@ static int gl_load(void) {
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 /* iOS app glue (ios_glue.m in the private app repo): SDL2 has no safe-area API */
 int ios_safe_insets(SDL_Window *win, float *l, float *t, float *r, float *b);
+void ios_media_setup(void);                                                       /* lock screen / CarPlay: Now Playing and the remote commands */
+void ios_media_update(const char *title, const char *artist, const char *album, int playing, double pos, double duration);
+int ios_media_poll(void);                                                         /* a remote command: 0 play, 1 pause, 2 next, 3 previous, -1 none */
+void ios_audio_longform(void);                                                    /* AirPlay 2 (HomePod) needs the long-form route sharing policy */
+void ios_airplay_place(SDL_Window *win, float x, float y, float size, int visible);   /* the native AirPlay button over the window (points) */
+float ios_output_latency_ms(void);                                                /* latency of the output route in ms (AirPlay: ~2000) */
+int ios_audio_event_poll(void);                                                   /* 1 = route changed / interruption ended (reopen the output), 2 = pause (fell back to the speaker) */
+int ios_music_dir(char *out, int outlen);
 static volatile int g_bg;                /* the app is in the background: nothing is drawn (iOS does not allow OpenGL there), the sound goes on */
 static int ios_bg_watch(void *ud, SDL_Event *e) {      /* called by SDL on the main thread the moment iOS says so */
     (void)ud;
@@ -1753,6 +1761,9 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
             snprintf(b, sizeof b, "%d / %d", tn->song, tn->info.songs);
             text_right(M + aw - 16, hy + 44, 13, VC[0], b);
             if (g_paused) text_right(M + aw - 16, hy + 62, 12, VC[2], "PAUSED");
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+            draw_airplay_corner(M + aw - 30, hy + hh - 24, 16);
+#endif
             float cx = M + 16, cy = hy + hh - 30;
             cx += chip(cx, cy, tn->info.rsid ? "RSID" : "PSID", VC[0], 1);
             cx += chip(cx, cy, tn->pal ? "PAL" : "NTSC", VC[2], 1);
@@ -2183,6 +2194,8 @@ static int gl_compile(GLenum type, const char *src) {
 /* ---------------------------------------------------------------- main loop (a function so it can also run in the browser) */
 #ifdef __EMSCRIPTEN__
 #define AUDIO_SAMPLES 2048
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+#define AUDIO_SAMPLES 2048                         /* iOS: AirPlay and Bluetooth need larger buffers than the desktop's 1024 */
 #else
 #define AUDIO_SAMPLES 1024
 #endif
@@ -2241,6 +2254,64 @@ EMSCRIPTEN_KEEPALIVE void ng_web_add(const char *path) {
     int was = npl;
     add_path(path, 0);
     if (npl > was && cur < 0) play_index(was, 0);
+}
+#endif
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+/* the AirPlay button: a native view over the window (AVRoutePickerView, ios_glue.m); here only its round background is drawn and the place is remembered for the frame */
+static float g_ap_x, g_ap_y, g_ap_r; static int g_ap_seen;
+static void draw_airplay_corner(float cx, float cy, float r) {
+    rrect(cx - r, cy - r, 2 * r, 2 * r, r, C(0.13f, 0.18f, 0.28f, 0.92f));
+    g_ap_x = cx; g_ap_y = cy; g_ap_r = r; g_ap_seen = 1;
+}
+/* The audio output after a change of the route (CarPlay cable out, Bluetooth in ...) or an interruption (call, Siri): the output of SDL does not come back by itself.
+ * It is opened again (the tune goes on where it is); if the route fell back to the built-in speaker the player pauses first. A watchdog does the same when a tune should
+ * be playing but the audio callback stands still. */
+static void audio_recover(void) {
+    ios_audio_longform();
+    if (g_dev) { SDL_CloseAudioDevice(g_dev); g_dev = 0; }
+    SDL_AudioSpec want, have; SDL_zero(want); SDL_zero(have);
+    want.freq = g_rate; want.format = AUDIO_S16SYS; want.channels = 2; want.samples = AUDIO_SAMPLES; want.callback = audio_cb;
+    g_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    ios_audio_longform();
+    if (g_dev) SDL_PauseAudioDevice(g_dev, 0);
+}
+static void audio_watch(void) {
+    static Uint32 recover_at, last_t, last_try; static uint64_t last_frames;
+    Uint32 tn = SDL_GetTicks();
+    int ev = ios_audio_event_poll();
+    if (ev && tn - last_try < 1500) ev = 0;                                 /* the notifications that our own reopening causes */
+    if (ev) { if (ev & 2) g_paused = 1; recover_at = tn + 400; }
+    if (recover_at && (int)(tn - recover_at) >= 0) { recover_at = 0; audio_recover(); last_try = tn; last_t = tn; }
+    int should = g_tune && g_tune->e && !g_paused;
+    uint64_t fr = g_vis.frames;
+    if (!should || fr != last_frames) { last_frames = fr; last_t = tn; return; }
+    if (tn - last_t > 2000 && tn - last_try > 5000) { last_try = tn; last_t = tn; audio_recover(); }
+}
+/* Lock screen / Control Center / CarPlay: title, author, released + tune number and the position go to Now Playing when something changed (and every 15 s); the remote
+ * commands (0 play, 1 pause, 2 next tune, 3 previous tune) are picked up here. */
+static void ios_media_sync(void) {
+    audio_watch();
+    int c; while ((c = ios_media_poll()) >= 0) {
+        if (c == 0) { g_paused = 0; if (!g_dev || SDL_GetAudioDeviceStatus(g_dev) != SDL_AUDIO_PLAYING) audio_recover(); }
+        else if (c == 1) g_paused = 1;
+        else if (c == 2) step_tune(1);
+        else if (c == 3) step_tune(-1);
+    }
+    static char mt[160], ma[96], mb[96]; static int mp = -1; static Uint32 mt0;
+    char title[160] = "ngSid", artist[96] = "", album[96] = "";
+    const tune_t *tn = g_tune;
+    if (tn) {
+        snprintf(title, sizeof title, "%s", tn->info.name[0] ? tn->info.name : (cur >= 0 ? pl[cur].label : "ngSid"));
+        snprintf(artist, sizeof artist, "%s", tn->info.author);
+        snprintf(album, sizeof album, "%s%sTune %d / %d", tn->info.released, tn->info.released[0] ? "  \xc2\xb7  " : "", tn->song, tn->info.songs);
+    }
+    int now = tn && !g_paused;
+    Uint32 t = SDL_GetTicks();
+    if (now != mp || strcmp(title, mt) || strcmp(artist, ma) || strcmp(album, mb) || t - mt0 > 15000) {
+        mp = now; mt0 = t; snprintf(mt, sizeof mt, "%s", title); snprintf(ma, sizeof ma, "%s", artist); snprintf(mb, sizeof mb, "%s", album);
+        ios_media_update(mt, ma, mb, now, (double)g_vis.frames / g_rate, 0);
+    }
 }
 #endif
 
@@ -2307,6 +2378,7 @@ static void iter(void) {
             }
         }
 #if defined(__APPLE__) && TARGET_OS_IPHONE
+        ios_media_sync();
         if (g_bg) { SDL_Delay(100); return; }               /* in the background: no drawing, the sound goes on */
 #endif
         int ww, wh, dw, dh;
@@ -2392,6 +2464,14 @@ static void iter(void) {
             save_screenshot(shot, dw, dh);
             running = 0;
         }
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+        {   /* the AirPlay button: view units -> points (vpx / vpy is in pixels, GL counts the bottom inset as y) */
+            int show = g_ap_seen && ww > 0 && wh > 0;
+            if (show) ios_airplay_place(win, (((float)vpx + g_ap_x * view_scale) * ww / fdw), ((((float)(fdh - dh - vpy)) + g_ap_y * view_scale) * wh / fdh), 2 * g_ap_r * view_scale * ww / fdw, 1);
+            else ios_airplay_place(win, 0, 0, 0, 0);
+            g_ap_seen = 0;
+        }
+#endif
         SDL_GL_SwapWindow(win);
 #ifndef __EMSCRIPTEN__
         double spent = (double)(SDL_GetPerformanceCounter() - now) / freq;
@@ -2528,6 +2608,10 @@ int main(int argc, char **argv) {
     g_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (!g_dev) fprintf(stderr, "audio: %s (continuing without sound)\n", SDL_GetError());
     else SDL_PauseAudioDevice(g_dev, 0);
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    ios_audio_longform();                                      /* after SDL set its audio session: long-form playback, so that AirPlay 2 targets (HomePod) are offered */
+    ios_media_setup();
+#endif
 
     if (!npl && !shot) {   /* nothing given: look for SID files in ~/Musik, then ~/Music */
         const char *home = getenv("HOME");

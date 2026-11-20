@@ -5,8 +5,8 @@
  *
  * Window, input and audio come from SDL2; everything on screen is drawn through one small
  * batched OpenGL renderer (rounded rectangles as signed distance fields, soft glow lines,
- * a baked DejaVu Sans atlas). OpenGL is loaded at run time via SDL_GL_GetProcAddress, so
- * only libSDL2 is needed at link time.
+ * a baked DejaVu Sans atlas). The graphics API sits behind gfx.h; the OpenGL backend (gfx_gl.c) is loaded at run time via
+ * SDL_GL_GetProcAddress, so only libSDL2 is needed at link time.
  *
  * Keys: V orb view, B HVSC online browser (Backspace = folder up; needs curl), Space pause, Left/Right song, Up/Down file, 1-3 mute voice, 4 mute digi, +/- volume,
  *       R restart, F or F11 fullscreen, Esc quit. Mouse: click a voice card to mute it,
@@ -23,6 +23,7 @@
 #include "c64img_data.h"
 #include "icon_data.h"
 #include "hvsc.h"
+#include "gfx.h"
 #include "version.h"
 
 #include <SDL2/SDL.h>
@@ -46,107 +47,6 @@
 #include <strings.h>
 #include <sys/stat.h>
 
-/* ================================================================== OpenGL loader */
-#ifdef __EMSCRIPTEN__
-#include <GLES3/gl3.h>
-static int gl_load(void) { return 0; }
-#define GLSL_VERSION "#version 300 es\nprecision highp float;\nprecision highp int;\n"
-#elif defined(NG_GLES)
-#include <OpenGLES/ES3/gl.h>
-static int gl_load(void) { return 0; }
-#define GLSL_VERSION "#version 300 es\nprecision highp float;\nprecision highp int;\n"
-#else
-#define GLSL_VERSION "#version 330 core\n"
-
-typedef unsigned int GLuint;
-typedef int GLint;
-typedef int GLsizei;
-typedef unsigned int GLenum;
-typedef float GLfloat;
-typedef char GLchar;
-typedef long GLsizeiptr;
-typedef long GLintptr;
-
-#define GL_COLOR_BUFFER_BIT 0x4000
-#define GL_BLEND 0x0BE2
-#define GL_SRC_ALPHA 0x0302
-#define GL_ONE_MINUS_SRC_ALPHA 0x0303
-#define GL_ONE 1
-#define GL_TEXTURE_2D 0x0DE1
-#define GL_TEXTURE_MIN_FILTER 0x2801
-#define GL_TEXTURE_MAG_FILTER 0x2800
-#define GL_TEXTURE_WRAP_S 0x2802
-#define GL_TEXTURE_WRAP_T 0x2803
-#define GL_LINEAR 0x2601
-#define GL_LINEAR_MIPMAP_LINEAR 0x2703
-#define GL_CLAMP_TO_EDGE 0x812F
-#define GL_RED 0x1903
-#define GL_R8 0x8229
-#define GL_RGBA 0x1908
-#define GL_UNSIGNED_BYTE 0x1401
-#define GL_FLOAT 0x1406
-#define GL_TRIANGLES 4
-#define GL_ARRAY_BUFFER 0x8892
-#define GL_DYNAMIC_DRAW 0x88E8
-#define GL_VERTEX_SHADER 0x8B31
-#define GL_FRAGMENT_SHADER 0x8B30
-#define GL_COMPILE_STATUS 0x8B81
-#define GL_LINK_STATUS 0x8B82
-#define GL_UNPACK_ALIGNMENT 0x0CF5
-#define GL_PACK_ALIGNMENT 0x0D05
-
-#define GLFUNCS(X) \
-    X(void, glClearColor, (GLfloat, GLfloat, GLfloat, GLfloat)) \
-    X(void, glClear, (GLuint)) \
-    X(void, glViewport, (GLint, GLint, GLsizei, GLsizei)) \
-    X(void, glEnable, (GLenum)) \
-    X(void, glBlendFunc, (GLenum, GLenum)) \
-    X(void, glGenTextures, (GLsizei, GLuint *)) \
-    X(void, glBindTexture, (GLenum, GLuint)) \
-    X(void, glTexImage2D, (GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *)) \
-    X(void, glTexParameteri, (GLenum, GLenum, GLint)) \
-    X(void, glPixelStorei, (GLenum, GLint)) \
-    X(void, glDrawArrays, (GLenum, GLint, GLsizei)) \
-    X(void, glReadPixels, (GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *)) \
-    X(GLuint, glCreateShader, (GLenum)) \
-    X(void, glShaderSource, (GLuint, GLsizei, const GLchar *const *, const GLint *)) \
-    X(void, glCompileShader, (GLuint)) \
-    X(void, glGetShaderiv, (GLuint, GLenum, GLint *)) \
-    X(void, glGetShaderInfoLog, (GLuint, GLsizei, GLsizei *, GLchar *)) \
-    X(GLuint, glCreateProgram, (void)) \
-    X(void, glAttachShader, (GLuint, GLuint)) \
-    X(void, glLinkProgram, (GLuint)) \
-    X(void, glGetProgramiv, (GLuint, GLenum, GLint *)) \
-    X(void, glGetProgramInfoLog, (GLuint, GLsizei, GLsizei *, GLchar *)) \
-    X(void, glUseProgram, (GLuint)) \
-    X(void, glDeleteShader, (GLuint)) \
-    X(GLint, glGetUniformLocation, (GLuint, const GLchar *)) \
-    X(void, glUniform1i, (GLint, GLint)) \
-    X(void, glUniform1f, (GLint, GLfloat)) \
-    X(void, glUniform2f, (GLint, GLfloat, GLfloat)) \
-    X(void, glGenVertexArrays, (GLsizei, GLuint *)) \
-    X(void, glBindVertexArray, (GLuint)) \
-    X(void, glGenBuffers, (GLsizei, GLuint *)) \
-    X(void, glBindBuffer, (GLenum, GLuint)) \
-    X(void, glBufferData, (GLenum, GLsizeiptr, const void *, GLenum)) \
-    X(void, glBufferSubData, (GLenum, GLintptr, GLsizeiptr, const void *)) \
-    X(void, glEnableVertexAttribArray, (GLuint)) \
-    X(void, glVertexAttribPointer, (GLuint, GLint, GLenum, unsigned char, GLsizei, const void *)) \
-    X(void, glGenerateMipmap, (GLenum))
-
-#define X(ret, name, args) static ret(*name) args;
-GLFUNCS(X)
-#undef X
-
-static int gl_load(void) {
-#define X(ret, name, args) \
-    name = (ret(*) args)SDL_GL_GetProcAddress(#name); \
-    if (!name) { fprintf(stderr, "missing OpenGL function %s\n", #name); return -1; }
-    GLFUNCS(X)
-#undef X
-    return 0;
-}
-#endif
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 /* iOS app glue (ios_glue.m in the private app repo): SDL2 has no safe-area API */
@@ -171,47 +71,22 @@ static int ios_bg_watch(void *ud, SDL_Event *e) {      /* called by SDL on the m
 /* ================================================================== batched 2D renderer */
 
 typedef struct { float r, g, b, a; } col;
-typedef struct { float x, y, u, v, r, g, b, a, m, p1, p2, p3; } vtx;
+typedef gfx_vtx vtx;
 
 #define MAXV 200000
 static vtx *vb;
 static int nv;
 static int add_blend;
-static GLuint prog, vao, vbo, fonttex, c64tex[2];
-static GLint u_res, u_pxs, u_tex;
+static gfx_tex *fonttex, *c64tex[2];
 
 static float view_w, view_h, view_scale = 1;
 static int g_mobile;                  /* touch device (web, iOS): lean mode with fewer additive blend effects */
 static int glyph_idx[256];
 
-static const char *VS =
-    GLSL_VERSION
-    "layout(location=0) in vec2 pos; layout(location=1) in vec2 uv; layout(location=2) in vec4 col;"
-    "layout(location=3) in vec4 par;\n"
-    "uniform vec2 res; out vec2 vuv; out vec4 vcol; out vec4 vpar;\n"
-    "void main(){ vuv=uv; vcol=col; vpar=par;"
-    " gl_Position=vec4(pos.x/res.x*2.0-1.0, 1.0-pos.y/res.y*2.0, 0.0, 1.0); }\n";
-
-static const char *FS =
-    GLSL_VERSION
-    "in vec2 vuv; in vec4 vcol; in vec4 vpar; out vec4 o;\n"
-    "uniform sampler2D tex; uniform float pxs;\n"
-    "float sdbox(vec2 p, vec2 h, float r){ vec2 q=abs(p)-h+vec2(r); return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }\n"
-    "void main(){\n"
-    " int m=int(vpar.x+0.5);\n"
-    " if(m==0){ o=vcol; }\n"
-    " else if(m==1){ float a=texture(tex,vuv).r; o=vec4(vcol.rgb,vcol.a*a); }\n"
-    " else if(m==2){ float d=sdbox(vuv,vpar.yz,vpar.w); o=vec4(vcol.rgb,vcol.a*clamp(0.5-d*pxs,0.0,1.0)); }\n"
-    " else if(m==3){ float t=abs(vuv.y); o=vec4(vcol.rgb,vcol.a*exp(-t*t*vpar.y)); }\n"
-    " else if(m==7){ vec4 t=texture(tex,vuv); o=vec4(t.rgb/max(t.a,0.001),t.a*vcol.a); }\n"
-    " else if(m==5){ float d=sdbox(vuv,vpar.yz,vpar.w); float a=clamp(1.0-d/vpar.w,0.0,1.0); o=vec4(vcol.rgb,vcol.a*a*a); }\n"
-    " else { o=vec4(vcol.rgb,vcol.a*exp(-dot(vuv,vuv)/(2.0*vpar.y*vpar.y))); }\n"
-    "}\n";
 
 static void flush(void) {
     if (!nv) return;
-    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)((size_t)nv * sizeof(vtx)), vb);
-    glDrawArrays(GL_TRIANGLES, 0, nv);
+    gfx_draw(vb, nv);
     nv = 0;
 }
 
@@ -219,7 +94,7 @@ static void set_additive(int on) {
     if (on == add_blend) return;
     flush();
     add_blend = on;
-    glBlendFunc(GL_SRC_ALPHA, on ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+    gfx_set_additive(on);
 }
 
 static void V(float x, float y, float u, float v, col c, float m, float p1, float p2, float p3) {
@@ -265,7 +140,7 @@ static void tri(float x0, float y0, float x1, float y1, float x2, float y2, col 
    idx 0 = 6581 C64, 1 = 8580 C64 */
 static void draw_c64(int idx, float cx, float cy, float w, float h, float ang, float a) {
     flush();
-    glBindTexture(GL_TEXTURE_2D, c64tex[idx]);
+    gfx_set_texture(c64tex[idx]);
     col c = C(1, 1, 1, a);
     float co = cosf(ang), si = sinf(ang), px[4], py[4];
     static const float dx[4] = { -0.5f, 0.5f, -0.5f, 0.5f }, dy[4] = { -0.5f, -0.5f, 0.5f, 0.5f };
@@ -273,7 +148,7 @@ static void draw_c64(int idx, float cx, float cy, float w, float h, float ang, f
     V(px[0], py[0], 0, 0, c, 7, 0, 0, 0); V(px[1], py[1], 1, 0, c, 7, 0, 0, 0); V(px[2], py[2], 0, 1, c, 7, 0, 0, 0);
     V(px[1], py[1], 1, 0, c, 7, 0, 0, 0); V(px[3], py[3], 1, 1, c, 7, 0, 0, 0); V(px[2], py[2], 0, 1, c, 7, 0, 0, 0);
     flush();
-    glBindTexture(GL_TEXTURE_2D, fonttex);
+    gfx_set_texture(fonttex);
 }
 /* is the point inside the picture turned by ang around cx,cy? */
 static int c64_hit(float px, float py, float cx, float cy, float w, float h, float ang) {
@@ -2201,28 +2076,13 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
 static void save_screenshot(const char *file, int w, int h) {
     uint8_t *px = (uint8_t *)malloc((size_t)w * (size_t)h * 4);
     uint8_t *fl = (uint8_t *)malloc((size_t)w * (size_t)h * 4);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    gfx_read_pixels(w, h, px);
     for (int y = 0; y < h; y++) memcpy(fl + (size_t)y * (size_t)w * 4, px + (size_t)(h - 1 - y) * (size_t)w * 4, (size_t)w * 4);
     SDL_Surface *sf = SDL_CreateRGBSurfaceFrom(fl, w, h, 32, w * 4, 0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
     if (sf) { SDL_SaveBMP(sf, file); SDL_FreeSurface(sf); }
     free(px); free(fl);
 }
 
-static int gl_compile(GLenum type, const char *src) {
-    GLuint sh = glCreateShader(type);
-    glShaderSource(sh, 1, &src, NULL);
-    glCompileShader(sh);
-    GLint ok = 0;
-    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char log[1024];
-        glGetShaderInfoLog(sh, sizeof log, NULL, log);
-        fprintf(stderr, "shader error: %s\n", log);
-        return 0;
-    }
-    return (int)sh;
-}
 
 /* ---------------------------------------------------------------- main loop (a function so it can also run in the browser) */
 #ifdef __EMSCRIPTEN__
@@ -2233,7 +2093,6 @@ static int gl_compile(GLenum type, const char *src) {
 #define AUDIO_SAMPLES 1024
 #endif
 static SDL_Window *win;
-static SDL_GLContext ctx;
 static const char *shot;
 static int shot_frames, running, frame, fullscreen;
 static Uint64 t0, tlast;
@@ -2443,7 +2302,7 @@ static void iter(void) {
 #endif
         int ww, wh, dw, dh;
         SDL_GetWindowSize(win, &ww, &wh);
-        SDL_GL_GetDrawableSize(win, &dw, &dh);
+        gfx_drawable_size(win, &dw, &dh);
         int fdw = dw, fdh = dh, vpx = 0, vpy = 0;           /* the whole framebuffer; dw/dh become the part the UI is laid out in */
 #if defined(__APPLE__) && TARGET_OS_IPHONE
         {   /* iOS: keep the UI out of the notch / Dynamic Island, the home bar and the rounded corners (insets in points) */
@@ -2506,16 +2365,9 @@ static void iter(void) {
         if (g_dev) SDL_UnlockAudioDevice(g_dev);
         analyse(&snap, (float)dt);
 
-        glViewport(0, 0, fdw, fdh);
-        glClearColor(BG0.r, BG0.g, BG0.b, 1);
-        glClear(GL_COLOR_BUFFER_BIT);
-        glViewport(vpx, vpy, dw, dh);
-        glUseProgram(prog);
-        glUniform2f(u_res, view_w, view_h);
-        glUniform1f(u_pxs, view_scale);
-        glUniform1i(u_tex, 0);
-        glBindVertexArray(vao);
-        glBindTexture(GL_TEXTURE_2D, fonttex);
+        gfx_frame_begin(fdw, fdh, vpx, vpy, dw, dh, BG0.r, BG0.g, BG0.b);
+        gfx_set_params(view_w, view_h, view_scale);
+        gfx_set_texture(fonttex);
         draw_ui(&snap, (double)(now - t0) / freq, dt);
         draw_ctx_menu(dt);
         set_additive(0);
@@ -2532,7 +2384,7 @@ static void iter(void) {
             g_ap_seen = 0;
         }
 #endif
-        SDL_GL_SwapWindow(win);
+        gfx_frame_end(win);
 #ifndef __EMSCRIPTEN__
         double spent = (double)(SDL_GetPerformanceCounter() - now) / freq;
         if (spent < 0.012) SDL_Delay((Uint32)((0.0167 - spent) * 1000));   /* in case vsync is unavailable */
@@ -2576,18 +2428,9 @@ int main(int argc, char **argv) {
     SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "1");
 #endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
-#ifdef NG_GLES
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-#else
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-#endif
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+    gfx_window_attrs();
     win = SDL_CreateWindow("ngSid", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 860,
-                                       SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+                                       gfx_window_flags() | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (!win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
     SDL_SetWindowMinimumSize(win, 360, 480);      /* narrow is fine: the portrait layout takes over */
     {
@@ -2601,59 +2444,14 @@ int main(int argc, char **argv) {
 #ifdef __EMSCRIPTEN__
     EM_ASM({ if (window.ngFit) window.ngFit(); });
 #endif
-    ctx = SDL_GL_CreateContext(win);
-    if (!ctx) { fprintf(stderr, "OpenGL 3.3 context: %s\n", SDL_GetError()); return 1; }
-    if (gl_load()) return 1;
-    SDL_GL_SetSwapInterval(1);
-
-    int vsh = gl_compile(GL_VERTEX_SHADER, VS), fsh = gl_compile(GL_FRAGMENT_SHADER, FS);
-    if (!vsh || !fsh) return 1;
-    prog = glCreateProgram();
-    glAttachShader(prog, (GLuint)vsh); glAttachShader(prog, (GLuint)fsh);
-    glLinkProgram(prog);
-    GLint lk = 0;
-    glGetProgramiv(prog, GL_LINK_STATUS, &lk);
-    if (!lk) { char log[1024]; glGetProgramInfoLog(prog, sizeof log, NULL, log); fprintf(stderr, "link: %s\n", log); return 1; }
-    u_res = glGetUniformLocation(prog, "res");
-    u_pxs = glGetUniformLocation(prog, "pxs");
-    u_tex = glGetUniformLocation(prog, "tex");
-
+    if (gfx_init(win, MAXV)) return 1;
     vb = (vtx *)malloc(sizeof(vtx) * MAXV);
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
-    glGenBuffers(1, &vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(vtx) * MAXV), NULL, GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0); glVertexAttribPointer(0, 2, GL_FLOAT, 0, sizeof(vtx), (void *)0);
-    glEnableVertexAttribArray(1); glVertexAttribPointer(1, 2, GL_FLOAT, 0, sizeof(vtx), (void *)8);
-    glEnableVertexAttribArray(2); glVertexAttribPointer(2, 4, GL_FLOAT, 0, sizeof(vtx), (void *)16);
-    glEnableVertexAttribArray(3); glVertexAttribPointer(3, 4, GL_FLOAT, 0, sizeof(vtx), (void *)32);
-
     for (int i = 0; i < 256; i++) glyph_idx[i] = -1;
     for (int i = 0; i < FONT_GLYPH_COUNT; i++) if (font_glyphs[i].code < 256) glyph_idx[font_glyphs[i].code] = i;
-    glGenTextures(1, &fonttex);
-    glBindTexture(GL_TEXTURE_2D, fonttex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, FONT_ATLAS_W, FONT_ATLAS_H, 0, GL_RED, GL_UNSIGNED_BYTE, font_atlas);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glGenTextures(2, c64tex);
-    for (int i = 0; i < 2; i++) {
-        glBindTexture(GL_TEXTURE_2D, c64tex[i]);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, i ? C64_8580_W : C64_6581_W, i ? C64_8580_H : C64_6581_H, 0, GL_RGBA, GL_UNSIGNED_BYTE, i ? c64_8580_rgba : c64_6581_rgba);
-        glGenerateMipmap(GL_TEXTURE_2D);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, fonttex);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    fonttex = gfx_tex_create(FONT_ATLAS_W, FONT_ATLAS_H, 1, font_atlas);
+    for (int i = 0; i < 2; i++)
+        c64tex[i] = gfx_tex_create(i ? C64_8580_W : C64_6581_W, i ? C64_8580_H : C64_6581_H, 4, i ? c64_8580_rgba : c64_6581_rgba);
+    if (!fonttex || !c64tex[0] || !c64tex[1]) return 1;
 
 #ifdef __EMSCRIPTEN__
     g_mobile = EM_ASM_INT({ return (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ? 1 : 0; });
@@ -2710,7 +2508,7 @@ int main(int argc, char **argv) {
 #endif
     if (g_dev) { SDL_CloseAudioDevice(g_dev); }
     tune_free(g_tune);
-    SDL_GL_DeleteContext(ctx);
+    gfx_shutdown();
     SDL_DestroyWindow(win);
     SDL_Quit();
     return 0;

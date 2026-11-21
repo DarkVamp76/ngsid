@@ -279,6 +279,7 @@ static const col WARN = { 1.0f, 0.45f, 0.35f, 1 };
 
 typedef struct {
     uint8_t *buf;
+    size_t len;             /* bytes in buf */
     psid_info info;
     engine *e;
     ngsid *s;               /* synth of SID 1, valid as long as e */
@@ -375,8 +376,68 @@ static void apply_mute(void) {
     engine_mute(g_tune->e, g_mute);
 }
 
+/* ---- NOTES view: the notes run down like the pattern of ngPlayer. A SID tune has no pattern in its file, so a second, silent engine of the same tune runs LA_ROWS rows ahead
+ * of what is played and its voice registers are read NT_RATE times a second: the rows below the bar are the notes that are about to sound, the rows above it those that have.
+ * A note is shown where a voice starts one (gate on, or another pitch), "===" where the gate goes off, "|" while it is held, "NOI" for noise. */
+#define NT_ROWS 64
+#define NT_RATE 12.0f
+#define LA_ROWS 16
+typedef struct { signed char note; unsigned char kind; } nt_cell;      /* kind: 0 empty, 1 note, 2 gate off, 3 noise, 4 held */
+static nt_cell nt_cells[9][NT_ROWS];
+static int64_t nt_rowid[NT_ROWS];                                      /* the absolute row that a slot holds, -1 = none */
+static int nt_pnote[9], nt_pgate[9], nt_pnoise[9];
+static engine *la_e; static tune_t *la_tune; static int la_ncols; static uint64_t la_frames; static int64_t la_next_row;
+static void la_destroy(void) { if (la_e) engine_destroy(la_e); la_e = NULL; la_tune = NULL; la_frames = 0; la_next_row = 0; }
+static int la_create(tune_t *t) {
+    la_destroy();
+    if (!t || !t->e || !t->buf) return -1;
+    ngsid_config cfg = g_cfg; cfg.pal = t->pal; cfg.stereo = 1; cfg.sample_rate = g_rate;
+    engine_opts eo; eo.pal_override = g_pal_override; eo.sid_model = g_sid_model;
+    char emsg[160] = "";
+    la_e = engine_create(t->buf, t->len, t->song, g_rate, &cfg, &eo, emsg, sizeof emsg);
+    if (!la_e) return -1;
+    la_tune = t; la_ncols = 3 * (int)(engine_sid_count(la_e) > 3 ? 3 : engine_sid_count(la_e)); la_frames = 0; la_next_row = 0;
+    memset(nt_cells, 0, sizeof nt_cells); memset(nt_pnote, 0, sizeof nt_pnote); memset(nt_pgate, 0, sizeof nt_pgate); memset(nt_pnoise, 0, sizeof nt_pnoise);
+    for (int i = 0; i < NT_ROWS; i++) nt_rowid[i] = -1;
+    return 0;
+}
+static void la_sample(int64_t row) {                                    /* the voices of the look-ahead engine now are row `row` */
+    const double clk = la_tune && la_tune->pal ? 985248.0 : 1022727.0;
+    const int slot = (int)(row % NT_ROWS);
+    for (int k = 0; k < 9; k++) {
+        nt_cell cell = { -1, 0 };
+        ngsid *syn = k < la_ncols ? engine_synth_at(la_e, (unsigned)(k / 3)) : NULL;
+        if (syn) {
+            ngsid_voice_info vi; ngsid_get_voice_info(syn, k % 3, &vi);
+            int gate = vi.ctrl & 1, noise = (vi.ctrl & 0x80) != 0, note = -1;
+            double hz = vi.freq * clk / 16777216.0;
+            if (vi.freq && hz > 8) { int mi = (int)floor(69 + 12 * log2(hz / 440.0) + 0.5); if (mi >= 0 && mi < 128) note = mi; }
+            if (gate && note >= 0 && (!nt_pgate[k] || note != nt_pnote[k] || noise != nt_pnoise[k])) { cell.note = (signed char)note; cell.kind = noise ? 3 : 1; }
+            else if (!gate && nt_pgate[k]) cell.kind = 2;
+            else if (gate) cell.kind = 4;
+            nt_pgate[k] = gate; nt_pnote[k] = note; nt_pnoise[k] = noise;
+        }
+        nt_cells[k][slot] = cell;
+    }
+    nt_rowid[slot] = row;
+}
+/* render the look-ahead engine up to `target` frames, but not longer than budget_ms (catching up after the view was switched on in the middle of a tune takes a while) */
+static void la_advance(uint64_t target, double budget_ms) {
+    static int16_t raw[NGSID_BLOCK * 2];
+    const double rowf = (double)g_rate / NT_RATE;
+    const Uint64 t0 = SDL_GetPerformanceCounter();
+    while (la_e && la_frames < target) {
+        while ((double)la_next_row * rowf <= (double)la_frames) { la_sample(la_next_row); la_next_row++; }
+        size_t n = engine_render(la_e, raw, NGSID_BLOCK);
+        if (!n || engine_error(la_e)) { la_destroy(); return; }
+        la_frames += n;
+        if ((double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency() > budget_ms) break;
+    }
+}
+
 static void tune_free(tune_t *t) {
     if (!t) return;
+    if (t == la_tune) la_destroy();                    /* the look-ahead engine of the notes view belongs to this tune */
     if (t->e) engine_destroy(t->e);
     free(t->buf);
     free(t);
@@ -394,6 +455,7 @@ static int tune_load(const char *path, int song, tune_t **out_info) {
     t->buf = (uint8_t *)malloc(len > 0 ? (size_t)len : 1);
     if (!t->buf || fread(t->buf, 1, (size_t)len, f) != (size_t)len) { fclose(f); snprintf(g_error, sizeof g_error, "read error"); tune_free(t); return -1; }
     fclose(f);
+    t->len = (size_t)len;
     int rc = psid_parse(t->buf, (size_t)len, &t->info);
     if (rc) { snprintf(g_error, sizeof g_error, "%s", psid_strerror(rc)); tune_free(t); return -1; }
     if (song < 1 || song > t->info.songs) song = t->info.start_song;
@@ -1287,6 +1349,57 @@ static void draw_voice_compact(int c, int v, float x, float y, float w, float h,
     }
 }
 
+static void draw_notes(float x, float y, float w, float h, const vis_t *vs, float dtf) {
+    (void)dtf;
+    card(x, y, w, h, 0);
+    text(x + 18, y + 10, 12, DIM, "NOTES");
+    tune_t *tn = g_tune;
+    if (!tn || !tn->e) return;
+    static uint64_t prev_frames;
+    const double rowf = (double)g_rate / NT_RATE;
+    if (la_tune != tn || vs->frames < prev_frames) la_create(tn);              /* another tune, or the time went back (restart): a new look-ahead engine */
+    prev_frames = vs->frames;
+    const double now = (double)vs->frames / rowf;                               /* the row that sounds now, with the part of it that has passed */
+    const uint64_t target = (uint64_t)((now + LA_ROWS) * rowf);
+    la_advance(target, 10.0);
+    if (la_e && la_frames + (uint64_t)(2 * rowf) < target) text_right(x + w - 18, y + 10, 11, DIM, "reading ahead ...");
+    const int nsid = tn->nsid > 1 ? (tn->nsid > 3 ? 3 : tn->nsid) : 1, ncols = 3 * nsid;
+    const float x0 = x + 14, cw = (w - 28) / (float)ncols, hy = y + 30, ry0 = hy + 26, rh = 24, bottom = y + h - 10;
+    for (int k = 0; k < ncols; k++) {                                     /* column heads: a click mutes the voice like on its card */
+        int c = k / 3, v = k % 3, muted = (g_mute >> v) & 1;
+        float hx = x0 + k * cw + 2, hw = cw - 4;
+        int hv = hit(hx, hy, hw, 20);
+        rrect(hx, hy, hw, 20, 6, alpha(muted ? WARN : VC[v], muted ? 0.22f : (hv ? 0.28f : 0.16f)));
+        char lb[24]; if (nsid == 1) snprintf(lb, sizeof lb, "VOICE %d", v + 1); else snprintf(lb, sizeof lb, "SID %d  V%d", c + 1, v + 1);
+        text(hx + (hw - text_width(lb, 11)) / 2, hy + 4, 11, muted ? WARN : alpha(DIM, 1.0f), lb);
+        if (clicked(hx, hy, hw, 20)) { g_mute ^= 1u << v; apply_mute(); click = 0; }
+    }
+    int nvis = (int)((bottom - ry0) / rh);
+    if (nvis < 3) return;
+    const int half = nvis / 2;
+    const float ybar = ry0 + (float)half * rh;                              /* the bar: the row that sounds now, in the middle like in ngPlayer */
+    rrect(x + 8, ybar - 2, w - 16, rh, 6, alpha(VC[0], 0.14f));
+    const int64_t r0 = (int64_t)floor(now);
+    for (int64_t r = r0 - half - 1; r <= r0 + half + 2; r++) {
+        if (r < 0) continue;
+        float yy = ybar + (float)((double)r - now) * rh;
+        if (yy < ry0 - 2 || yy + rh > bottom) continue;
+        int slot = (int)(r % NT_ROWS), valid = nt_rowid[slot] == r;
+        float fade = 1.0f - 0.6f * fabsf(yy - ybar) / ((float)half * rh + 1);
+        for (int k = 0; k < ncols; k++) {
+            nt_cell cc = valid ? nt_cells[k][slot] : (nt_cell){ -1, 0 };
+            int v = k % 3, muted = (g_mute >> v) & 1;
+            float tx = x0 + k * cw + 8, al = (muted ? 0.35f : 1.0f) * fade;
+            char b[16];
+            if (cc.kind == 1) { snprintf(b, sizeof b, "%s%d", NOTE[cc.note % 12], cc.note / 12 - 1); text(tx, yy, 16, alpha(mix(TXT, VC[v], 0.35f), al), b); }
+            else if (cc.kind == 3) text(tx, yy, 16, alpha(VC[v], al), "NOI");
+            else if (cc.kind == 2) text(tx, yy, 16, alpha(WARN, al * 0.85f), "===");
+            else if (cc.kind == 4) text(tx + 4, yy, 16, alpha(VC[v], al * 0.35f), "|");
+            else text(tx, yy, 16, alpha(FAINT, al * 0.5f), "...");
+        }
+    }
+}
+
 static float digi_dmax = 32;
 
 /* The digi display normally shows the $D418 volume-register channel. Tunes that play samples
@@ -1372,7 +1485,7 @@ static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
 }
 
 static int g_portrait, g_plopen;      /* portrait (phones): stacked layout, playlist/browser as overlay */
-static int g_orb;                       /* 1 = orb instead of the voice cards (key V / switch in the filter strip) */
+static int g_orb;                       /* 0 = voice cards, 1 = orb, 2 = notes (key V / switch in the filter strip) */
 static float orb_bs[NBANDS];
 
 /* ================================================================== Orb: geodesic net, deformed by the spectrum
@@ -1844,7 +1957,7 @@ static void draw_airplay_corner(float cx, float cy, float r) {
 }
 #endif
 static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
-    (void)t;
+
     const float M = 10, BOT = g_duo ? 0.0f : 64.0f, gap = 8;        /* the Duo has the wide bar (draw_duo_bar) */
     float W = view_w, H = view_h, aw = W - 2 * M;
     static const tune_t *last_tune;
@@ -1897,23 +2010,37 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
     /* ---------------- vertical budget */
     float by = H - M - BOT, sh = g_duo ? 88.0f : (H < 720 ? 80 : 96), sy = by - M - sh, fh = 46, fy = sy - M - fh;   /* low windows: flatter spectrum card */
     float cy0 = hy + hh + M, midh = fy - M - cy0;
+    const float tv_side = NG_TV && nsid == 1 ? (aw - 2 * gap) / 3 : 0;   /* Apple TV, one SID: three square voice cards in one row */
+    if (NG_TV) {
+        const float tvdh = 52;                                               /* the digi strip is flatter here, the spectrum gets the room */
+        if (nsid == 1) { sh = by - (cy0 + tv_side + M + tvdh + M + fh + M); sy = by - sh; fy = sy - M - fh; midh = fy - M - cy0; }
+        else { sh = 120; sy = by - sh; fy = sy - M - fh; midh = fy - M - cy0; }
+    }
 
     if (g_plopen) {
         draw_sidebar(M, cy0, aw, sy + sh - cy0);      /* the transport bar below (LIST!) still gets its click */
     } else {
         /* ---------------- voices + digi, or the orb */
-        if (g_orb) draw_orb(M, cy0, aw, midh, (float)dt);
+        if (g_orb == 1) draw_orb(M, cy0, aw, midh, (float)dt);
+        else if (g_orb == 2) draw_notes(M, cy0, aw, midh, vs, (float)dt);
         else {
-            float dh = 64;
-            int rows = nsid == 1 ? 3 : nsid;
+            float dh = NG_TV ? 52.0f : 64.0f;
+            int rows = nsid == 1 && !NG_TV ? 3 : nsid;
             float rhv = (midh - dh - M - gap * (float)(rows - 1)) / (float)rows;
             if (rhv < 64) { dh = 46; rhv = (midh - dh - M - gap * (float)(rows - 1)) / (float)rows; }   /* tight: smaller digi card */
-            float rmax = nsid == 1 ? 120.0f : 90.0f;
+            float rmax = NG_TV ? (nsid == 1 ? tv_side : 170.0f) : (nsid == 1 ? 120.0f : 90.0f);
             if (rhv > rmax) rhv = rmax;
             if (rhv < 60) rhv = 60;
+            if (NG_TV && nsid == 1) rhv = tv_side;
             float vw3 = (aw - 2 * gap) / 3;
             for (int c = 0; c < rows; c++) {
-                if (nsid == 1) {
+                if (NG_TV && nsid == 1) {                                     /* three squares in one row: the large voice card */
+                    for (int v = 0; v < 3; v++) {
+                        float vx = M + v * (vw3 + gap);
+                        draw_voice(v, vx, cy0, vw3, rhv, vs, t);
+                        if (clicked(vx, cy0, vw3, rhv)) { g_mute ^= 1u << v; apply_mute(); click = 0; }
+                    }
+                } else if (nsid == 1) {
                     draw_voice_compact(0, c, M, cy0 + (float)c * (rhv + gap), aw, rhv, vs);
                     if (clicked(M, cy0 + (float)c * (rhv + gap), aw, rhv)) { g_mute ^= 1u << c; apply_mute(); click = 0; }
                 } else {
@@ -1939,14 +2066,14 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
             cx += chip(cx, cy, "LP", VC[0], (mode & 0x10) != 0);
             cx += chip(cx, cy, "BP", VC[0], (mode & 0x20) != 0);
             cx += chip(cx, cy, "HP", VC[0], (mode & 0x40) != 0);
-            float sw = 70, sx0 = M + aw - 14 - 2 * sw;
-            for (int i = 0; i < 2; i++) {
+            float sw = 62, sx0 = M + aw - 14 - 3 * sw;
+            static const char *const SL[3] = { "VOICES", "NOTES", "ORB" }; static const int SV[3] = { 0, 2, 1 };
+            for (int i = 0; i < 3; i++) {
                 float xx = sx0 + i * sw;
-                int on = (i == 1) == (g_orb != 0), hv = hit(xx, cy - 2, sw - 4, 20);
+                int on = g_orb == SV[i], hv = hit(xx, cy - 2, sw - 4, 20);
                 rrect(xx, cy - 2, sw - 4, 20, 6, on ? alpha(VC[2], 0.25f) : alpha(FAINT, hv ? 0.30f : 0.16f));
-                const char *l = i ? "ORB" : "VOICES";
-                text(xx + (sw - 4 - text_width(l, 11)) / 2, cy + 2, 11, on ? VC[2] : alpha(DIM, 0.9f), l);
-                if (clicked(xx, cy - 2, sw - 4, 20)) { g_orb = i; click = 0; }
+                text(xx + (sw - 4 - text_width(SL[i], 11)) / 2, cy + 2, 11, on ? VC[2] : alpha(DIM, 0.9f), SL[i]);
+                if (clicked(xx, cy - 2, sw - 4, 20)) { g_orb = SV[i]; click = 0; }
             }
         }
         float vuw = 130, spw = aw - vuw - M;
@@ -2088,6 +2215,8 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
     float W = view_w, H = view_h;
     int vol_changed = 0;
     (void)dt;
+
+    if (g_orb != 2 && la_e) la_destroy();                       /* the notes view is off: the look-ahead engine is not needed */
 
     /* background */
     rect_grad(0, 0, W, H, BG1, BG0);
@@ -2284,7 +2413,8 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
 
     /* ---------------- digi channel */
     float dy = vy + vh + M, dh = 96;
-    if (g_orb) draw_orb(ax, vy, aw, dy + dh - vy, (float)dt);
+    if (g_orb == 1) draw_orb(ax, vy, aw, dy + dh - vy, (float)dt);
+    else if (g_orb == 2) draw_notes(ax, vy, aw, dy + dh - vy, vs, (float)dt);
     else draw_digi(ax, dy, aw, dh, vs);
     if (!g_orb && clicked(ax, dy, aw, dh)) { int ds = digi_source(vs); g_mute ^= ds >= 0 ? 1u << ds : 8u; apply_mute(); click = 0; }
 
@@ -2314,14 +2444,14 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
         cx += 50;
         for (int v = 0; v < 3; v++) { snprintf(b, sizeof b, "V%d", v + 1); cx += chip(cx, cy, b, VC[v], (route >> v & 1) != 0); }
         {   /* VOICES | ORB switch (also for touch) */
-            float sw = 70, sx0 = ax + aw - 18 - 150 - 2 * sw;
-            for (int i = 0; i < 2; i++) {
+            float sw = 62, sx0 = ax + aw - 18 - 130 - 3 * sw;
+            static const char *const SL[3] = { "VOICES", "NOTES", "ORB" }; static const int SV[3] = { 0, 2, 1 };
+            for (int i = 0; i < 3; i++) {
                 float xx = sx0 + i * sw;
-                int on = (i == 1) == (g_orb != 0), hv = hit(xx, cy - 2, sw - 4, 20);
+                int on = g_orb == SV[i], hv = hit(xx, cy - 2, sw - 4, 20);
                 rrect(xx, cy - 2, sw - 4, 20, 6, on ? alpha(VC[2], 0.25f) : alpha(FAINT, hv ? 0.30f : 0.16f));
-                const char *l = i ? "ORB" : "VOICES";
-                text(xx + (sw - 4 - text_width(l, 11)) / 2, cy + 2, 11, on ? VC[2] : alpha(DIM, 0.9f), l);
-                if (clicked(xx, cy - 2, sw - 4, 20)) { g_orb = i; click = 0; }
+                text(xx + (sw - 4 - text_width(SL[i], 11)) / 2, cy + 2, 11, on ? VC[2] : alpha(DIM, 0.9f), SL[i]);
+                if (clicked(xx, cy - 2, sw - 4, 20)) { g_orb = SV[i]; click = 0; }
             }
         }
         float rx = ax + aw - 18;
@@ -2556,6 +2686,17 @@ static void ios_start_idle(void) {
     else if (nfav) job_start(1, fav_find(fav_last) >= 0 ? fav_last : fav[0].rel);
     else job_start(1, "MUSICIANS/F/Feekzoid/A_Tribute_to_Martin_Galway.sid");
 }
+#if defined(__APPLE__) && TARGET_OS_TV
+/* Apple TV: one press of Play/Pause arrives twice, as the key (SDL: PAUSE) and as a remote command of the system (play, pause or toggle, depending on what the system thinks the
+ * state is). All of them are the same press: one toggle, the others within half a second are ignored. */
+static void tv_press_toggle(void) {
+    static Uint32 last; Uint32 t = SDL_GetTicks();
+    if (last && t - last < 500) return;
+    last = t;
+    g_paused = !g_paused;
+    if (!g_paused && (!g_dev || SDL_GetAudioDeviceStatus(g_dev) != SDL_AUDIO_PLAYING)) audio_recover();
+}
+#endif
 static void ios_media_sync(void) {
     audio_watch();
     if (g_launch_bg && ios_app_active()) { g_launch_bg = 0; ios_start_idle(); }        /* the user opened the app: now it may start */
@@ -2564,6 +2705,9 @@ static void ios_media_sync(void) {
         if (g_tune && idx != cover_idx) { cover_idx = idx; ios_cover_set(idx); }
     }
     int c; while ((c = ios_media_poll()) >= 0) {
+#if defined(__APPLE__) && TARGET_OS_TV
+        if (c == 0 || c == 1) { tv_press_toggle(); continue; }      /* play / pause / toggle of the Apple TV remote: one toggle per press */
+#endif
         if (c == 0) { if (g_launch_bg && !g_tune) { g_launch_bg = 0; ios_start_idle(); } g_paused = 0; if (!g_dev || SDL_GetAudioDeviceStatus(g_dev) != SDL_AUDIO_PLAYING) audio_recover(); }
         else if (c == 1) g_paused = 1;
         else if (c == 2) step_tune(1);
@@ -2675,9 +2819,22 @@ static void iter(void) {
             case SDL_KEYDOWN:
                 switch (e.key.keysym.sym) {
                 case SDLK_ESCAPE: if (NG_TV && browse && !br_at_root()) browse_up(); else running = 0; break;      /* Apple TV: the Menu button goes one level up, at the top it leaves */
-                case SDLK_SPACE: case SDLK_PAUSE: g_paused = !g_paused; break;
+                case SDLK_SPACE: g_paused = !g_paused; break;
+                case SDLK_PAUSE:
+#if defined(__APPLE__) && TARGET_OS_TV
+                    tv_press_toggle();
+#else
+                    g_paused = !g_paused;
+#endif
+                    break;
+#if defined(__APPLE__) && TARGET_OS_TV
+                case SDLK_LEFT: case SDLK_RIGHT: {   /* Apple TV: left / right switch the view (voices, notes, orb); the tunes of a multi-tune file are not on the remote */
+                    static const int order[3] = { 0, 2, 1 }; int pos = g_orb == 2 ? 1 : (g_orb == 1 ? 2 : 0);
+                    pos = (pos + (e.key.keysym.sym == SDLK_RIGHT ? 1 : 2)) % 3; g_orb = order[pos]; break; }
+#else
                 case SDLK_LEFT: change_song(-1); break;
                 case SDLK_RIGHT: change_song(1); break;
+#endif
                 case SDLK_UP: if (browse) browse_move(-1); else change_file(-1); break;
                 case SDLK_DOWN: if (browse) browse_move(1); else change_file(1); break;
                 case SDLK_PAGEUP: if (browse) browse_move(-10); break;
@@ -2687,7 +2844,7 @@ static void iter(void) {
                 case SDLK_RETURN: case SDLK_KP_ENTER: if (browse) browse_activate(br_sel); break;
                 case SDLK_b: if (browse) browse = 0; else browse_open(); fav_mode = 0; break;
                 case SDLK_h: if (cur >= 0 && cur < npl && pl[cur].rel) fav_toggle(pl[cur].rel); break;    /* favorite on / off for the tune that plays */
-                case SDLK_v: g_orb = !g_orb; break;
+                case SDLK_v: g_orb = g_orb == 0 ? 2 : (g_orb == 2 ? 1 : 0); break;      /* voices -> notes -> orb */
                 case SDLK_BACKSPACE: if (browse) browse_up(); break;
                 case SDLK_r: if (cur >= 0) play_index(cur, cur_song); break;
                 case SDLK_1: case SDLK_2: case SDLK_3: case SDLK_4:
@@ -2787,7 +2944,7 @@ static void iter(void) {
             }
             if (ki < nk && SDL_GetTicks() > kt) {
                 static const struct { const char *n; SDL_Keycode k; } K[] = { { "up", SDLK_UP }, { "down", SDLK_DOWN }, { "left", SDLK_LEFT }, { "right", SDLK_RIGHT }, { "return", SDLK_RETURN }, { "menu", SDLK_ESCAPE }, { "play", SDLK_PAUSE } };
-                for (size_t j = 0; j < sizeof K / sizeof *K; j++) if (!strcmp(kv[ki], K[j].n)) { SDL_Event ev; SDL_zero(ev); ev.type = SDL_KEYDOWN; ev.key.keysym.sym = K[j].k; SDL_PushEvent(&ev); }
+                for (size_t j = 0; j < sizeof K / sizeof *K; j++) if (!strcmp(kv[ki], K[j].n) || (!strcmp(kv[ki], "play2") && K[j].k == SDLK_PAUSE)) { SDL_Event ev; SDL_zero(ev); ev.type = SDL_KEYDOWN; ev.key.keysym.sym = K[j].k; SDL_PushEvent(&ev); if (!strcmp(kv[ki], "play2")) SDL_PushEvent(&ev); }
                 ki++; kt = SDL_GetTicks() + 1500;
             }
         }
@@ -2930,6 +3087,7 @@ int main(int argc, char **argv) {
     fav_load();
     if (getenv("NGSID_TEST_FAV")) fav_mode = 1;                     /* test hook: start with the FAV tab */
     if (getenv("NGSID_TEST_ORB")) g_orb = 1;                        /* test hook: start with the orb instead of the voices */
+    if (getenv("NGSID_TEST_NOTES")) g_orb = 2;                      /* test hook: start with the notes */
     if (getenv("NGSID_TEST_TOGGLE")) fav_toggle(getenv("NGSID_TEST_TOGGLE"));   /* test hook: favorite on / off for this HVSC path at the start */
     if (getenv("NGSID_TEST_CTX") && nfav) { snprintf(ctx_rel, sizeof ctx_rel, "%s", fav[atoi(getenv("NGSID_TEST_CTX")) % nfav].rel); ctx_on = 1; ctx_x = 60; ctx_y = 60; }   /* test hook: the open context menu */
     fav_last_load();

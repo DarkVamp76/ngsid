@@ -2367,11 +2367,38 @@ static void audio_watch(void) {
  * commands (0 play, 1 pause, 2 next tune, 3 previous tune) are picked up here. */
 /* The cover of the lock screen / Control Center: the C64 of the chip model (6581 or 8580) in the middle of a dark square, drawn once per model (bilinear, the picture is premultiplied). */
 #define COVER_PX 512
+/* text into the cover (CPU): the glyphs of the font atlas, scaled, alpha-blended; returns nothing, y = top of the line */
+static void cover_text(unsigned char *buf, float x, float y, float size, const unsigned char rgb[3], const char *str) {
+    float sc = size / FONT_PX;
+    for (; *str; str++) {
+        int gi = glyph_idx[(unsigned char)*str];
+        if (gi < 0) continue;
+        const font_glyph *g = &font_glyphs[gi];
+        if (g->w && g->h) {
+            float gx = x + g->xoff * sc, gy = y + g->yoff * sc, gw = g->w * sc, gh = g->h * sc;
+            for (int yy = (int)floorf(gy); yy < (int)ceilf(gy + gh); yy++) for (int xx = (int)floorf(gx); xx < (int)ceilf(gx + gw); xx++) {
+                if (xx < 0 || yy < 0 || xx >= COVER_PX || yy >= COVER_PX) continue;
+                float u = ((float)xx + 0.5f - gx) / sc - 0.5f, v = ((float)yy + 0.5f - gy) / sc - 0.5f;      /* position in the glyph bitmap */
+                int ix = (int)floorf(u), iy = (int)floorf(v);
+                float ax = u - (float)ix, ay = v - (float)iy, a = 0;
+                for (int dy = 0; dy < 2; dy++) for (int dx = 0; dx < 2; dx++) {
+                    int px = ix + dx, py = iy + dy;
+                    if (px < 0 || py < 0 || px >= g->w || py >= g->h) continue;
+                    a += (dx ? ax : 1 - ax) * (dy ? ay : 1 - ay) * (float)font_atlas[(g->y + py) * FONT_ATLAS_W + g->x + px];
+                }
+                a /= 255.0f;
+                unsigned char *o = buf + ((size_t)yy * COVER_PX + xx) * 4;
+                for (int i = 0; i < 3; i++) o[i] = (unsigned char)((float)o[i] * (1 - a) + (float)rgb[i] * a);
+            }
+        }
+        x += g->adv * sc;
+    }
+}
 static void ios_cover_set(int idx) {
     static unsigned char buf[COVER_PX * COVER_PX * 4];
     const unsigned char *src = idx ? c64_8580_rgba : c64_6581_rgba;
     int sw = idx ? C64_8580_W : C64_6581_W, sh = idx ? C64_8580_H : C64_6581_H;
-    float k = (float)COVER_PX * 0.86f / (float)sw, dw = sw * k, dh = sh * k, x0 = (COVER_PX - dw) / 2, y0 = (COVER_PX - dh) / 2;
+    float k = (float)COVER_PX * 0.86f / (float)sw, dw = sw * k, dh = sh * k, x0 = (COVER_PX - dw) / 2, y0 = (float)COVER_PX * 0.40f - dh / 2;      /* a little above the middle: the chip name goes below */
     for (int y = 0; y < COVER_PX; y++) {
         float t = (float)y / (float)COVER_PX;
         float bg[3] = { 12 + 10 * t, 16 + 12 * t, 30 + 18 * t };                          /* a soft dark gradient, like the app background */
@@ -2393,6 +2420,11 @@ static void ios_cover_set(int idx) {
             for (int i = 0; i < 3; i++) { float v = c[i] + bg[i] * inv; o[i] = (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v); }
             o[3] = 255;
         }
+    }
+    {   const char *chip = idx ? "MOS 8580" : "MOS 6581";
+        static const unsigned char col_txt[3] = { 200, 212, 240 };
+        const float size = 58;
+        cover_text(buf, ((float)COVER_PX - text_width(chip, size)) / 2, y0 + dh + 30, size, col_txt, chip);
     }
     ios_media_set_cover(buf, COVER_PX, COVER_PX);
 }

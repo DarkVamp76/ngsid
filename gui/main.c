@@ -55,6 +55,7 @@ int ios_safe_insets(SDL_Window *win, float *l, float *t, float *r, float *b);
 void ios_media_setup(void);                                                       /* lock screen / CarPlay: Now Playing and the remote commands */
 void ios_media_update(const char *title, const char *artist, const char *album, int playing, double pos, double duration);
 int ios_media_poll(void);                                                         /* a remote command: 0 play, 1 pause, 2 next, 3 previous, -1 none */
+int ios_hinge_status(SDL_Window *win);                                       /* ios_glue.m: -1 no hinge (iPhone, iPad), 1 closed, 2 partly open, 3 open (iPhone Duo) */
 int ios_launched_in_background(void);                                         /* ios_glue.m: started by the system in the background (CarPlay / lock screen play command): do not play by itself */
 int ios_app_active(void);                                                        /* ios_glue.m: the app is in the foreground */
 void ios_media_set_cover(const unsigned char *px, int w, int h);                 /* the cover for the lock screen: RGBA, opaque, top row first; NULL = none */
@@ -107,10 +108,17 @@ static void set_additive(int on) {
     gfx_set_additive(on);
 }
 
+static int g_duo;                      /* iPhone Duo opened: two pages, the list on the left, the player on the right, one wide bar below */
+static float g_ox;                     /* the right page is drawn with this offset in x (the left one at 0); elsewhere it stays 0 */
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#define GFX_OX g_ox
+#else
+#define GFX_OX 0.0f
+#endif
 static void V(float x, float y, float u, float v, col c, float m, float p1, float p2, float p3) {
     if (nv >= MAXV) flush();
     vtx *t = &vb[nv++];
-    t->x = x; t->y = y; t->u = u; t->v = v;
+    t->x = x + GFX_OX; t->y = y; t->u = u; t->v = v;
     t->r = c.r; t->g = c.g; t->b = c.b; t->a = c.a;
     t->m = m; t->p1 = p1; t->p2 = p2; t->p3 = p3;
 }
@@ -1590,7 +1598,7 @@ static void draw_sidebar(float x, float y, float w, float h) {
         if (sb_click(x + 8, y + 6, tw1 + 20, 30)) { browse = 0; fav_mode = 0; click = 0; }
         else if (sb_click(t2 - 10, y + 6, tw2 + 20, 30)) { browse_open(); click = 0; }
         else if (sb_click(t3 - 10, y + 6, tw3 + 20, 30)) { browse = 0; fav_mode = 1; click = 0; }
-        if (g_portrait) {                 /* second way out of the overlay: close button */
+        if (g_portrait && !g_duo) {       /* second way out of the overlay: close button (the Duo list stays open) */
             float bx = x + w - 42, by2 = y + 6;
             int hv = hit(bx, by2, 34, 30);
             rrect(bx, by2, 34, 30, 8, alpha(FAINT, hv ? 0.30f : 0.16f));
@@ -1601,7 +1609,7 @@ static void draw_sidebar(float x, float y, float w, float h) {
         int count = fav_mode ? nfav : browse ? nbe + boff : npl;
         char cnt[32];
         snprintf(cnt, sizeof cnt, "%d", fav_mode ? nfav : browse ? nbe : npl);
-        text_right(x + w - (g_portrait ? 54 : 18), y + 14, 13, DIM, cnt);
+        text_right(x + w - (g_portrait && !g_duo ? 54 : 18), y + 14, 13, DIM, cnt);
         float ry = y + 44, rh = touch ? 36 : 28, area = h - 44 - 40;
         if (browse) {
             char crumb[800];
@@ -1822,17 +1830,19 @@ static void draw_airplay_corner(float cx, float cy, float r) {
 #endif
 static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
     (void)t;
-    const float M = 10, BOT = 64, gap = 8;
+    const float M = 10, BOT = g_duo ? 0.0f : 64.0f, gap = 8;        /* the Duo has the wide bar (draw_duo_bar) */
     float W = view_w, H = view_h, aw = W - 2 * M;
     static const tune_t *last_tune;
     static int auto_done;
     if (g_tune != last_tune) { last_tune = g_tune; if (g_tune) g_plopen = 0; }
     if (!auto_done) { auto_done = 1; if (browse && !g_tune) g_plopen = 1; }
+    if (g_duo) g_plopen = 0;                                       /* the list is always on the left page */
     const tune_t *tn = g_tune;
     const int nsid = tn && tn->nsid > 1 ? (tn->nsid > 3 ? 3 : tn->nsid) : 1;
 
     /* ---------------- header */
-    float hy = M, hh = 100;
+    float hy = M, hh = g_duo ? 84.0f : 100.0f;
+    const float rpad = g_duo ? 84.0f : 0.0f;                       /* the Duo: time and Wi-Fi of the system lie over the top right corner */
     card(M, hy, aw, hh, 0);
     {
         char title[160], sub[200];
@@ -1843,7 +1853,7 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
             snprintf(title, sizeof title, "ngSid");
             snprintf(sub, sizeof sub, "SID player");
         }
-        float tmax = aw - 32 - 96, tsize = 22;
+        float tmax = aw - 32 - 96 - rpad, tsize = 22;
         while (tsize > 15 && text_width(title, tsize) > tmax) tsize -= 1;
         fit_text(title, tmax, tsize);
         text(M + 16, hy + 10, tsize, TXT, title);
@@ -1852,14 +1862,14 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
         else text(M + 16, hy + 14 + tsize, 13, DIM, sub);
         char tb[32];
         mmss(tb, sizeof tb, (double)vs->frames / g_rate);
-        text_right(M + aw - 16, hy + 10, 28, TXT, tb);
+        text_right(M + aw - 16 - rpad, hy + 10, 28, TXT, tb);
         if (tn) {
             char b[48];
             snprintf(b, sizeof b, "%d / %d", tn->song, tn->info.songs);
-            text_right(M + aw - 16, hy + 44, 13, VC[0], b);
-            if (g_paused) text_right(M + aw - 16, hy + 62, 12, VC[2], "PAUSED");
+            text_right(M + aw - 16 - rpad, hy + 44, 13, VC[0], b);
+            if (g_paused) text_right(M + aw - 16 - rpad, hy + 62, 12, VC[2], "PAUSED");
 #if defined(__APPLE__) && TARGET_OS_IPHONE
-            draw_airplay_corner(M + aw - 30, hy + hh - 24, 16);
+            if (!g_duo) draw_airplay_corner(M + aw - 30, hy + hh - 24, 16);     /* (the Duo has it in the wide bar) */
 #endif
             float cx = M + 16, cy = hy + hh - 30;
             cx += chip(cx, cy, tn->info.rsid ? "RSID" : "PSID", VC[0], 1);
@@ -1870,7 +1880,7 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
     }
 
     /* ---------------- vertical budget */
-    float by = H - M - BOT, sh = H < 720 ? 80 : 96, sy = by - M - sh, fh = 46, fy = sy - M - fh;   /* low windows: flatter spectrum card */
+    float by = H - M - BOT, sh = g_duo ? 88.0f : (H < 720 ? 80 : 96), sy = by - M - sh, fh = 46, fy = sy - M - fh;   /* low windows: flatter spectrum card */
     float cy0 = hy + hh + M, midh = fy - M - cy0;
 
     if (g_plopen) {
@@ -1930,7 +1940,7 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
     }
 
     /* ---------------- transport */
-    {
+    if (!g_duo) {
         float bx = M, bw = aw, cy = by + BOT / 2, r = 20;
         card(bx, by, bw, BOT, 0);
         float bxs[3] = { bx + 12, bx + 62, bx + 112 };
@@ -1970,6 +1980,76 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
     }
 }
 
+static void draw_duo_bar(float W, float H) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    const float M = 10, BH = 64;
+    float by = H - M - BH, cy = by + BH / 2, r = 20, fold = W / 2;
+    card(M, by, W - 2 * M, BH, 0);
+    /* left half: previous, play / pause, next, the volume up to the fold */
+    float bxs[3] = { M + 12, M + 62, M + 112 };
+    for (int i = 0; i < 3; i++) {
+        float x = bxs[i];
+        int hv = hit(x, cy - r, 2 * r, 2 * r);
+        rrect(x, cy - r, 2 * r, 2 * r, r, alpha(hv ? VC[0] : EDGE, hv ? 0.30f : 0.35f));
+        col ic = hv ? TXT : DIM;
+        float ccx = x + r, ccy = cy;
+        if (i == 0) { tri(ccx + 6, ccy - 8, ccx + 6, ccy + 8, ccx - 6, ccy, ic); rect(ccx - 9, ccy - 8, 3, 16, ic); }
+        else if (i == 2) { tri(ccx - 6, ccy - 8, ccx - 6, ccy + 8, ccx + 6, ccy, ic); rect(ccx + 6, ccy - 8, 3, 16, ic); }
+        else if (g_paused) tri(ccx - 5, ccy - 9, ccx - 5, ccy + 9, ccx + 9, ccy, ic);
+        else { rect(ccx - 7, ccy - 8, 5, 16, ic); rect(ccx + 2, ccy - 8, 5, 16, ic); }
+        if (clicked(x, cy - r, 2 * r, 2 * r)) {
+            if (i == 0) step_tune(-1);
+            else if (i == 2) step_tune(1);
+            else g_paused = !g_paused;
+            click = 0;
+        }
+    }
+    float vx = M + 172, vw = (fold - 8) - vx;
+    rrect(vx, cy - 3, vw, 6, 3, alpha(FAINT, 0.4f));
+    rrect(vx, cy - 3, 6 + (vw - 6) * g_vol, 6, 3, VC[0]);
+    rrect(vx + (vw - 6) * g_vol - 3, cy - 9, 18, 18, 9, TXT);
+    if (clicked(vx - 12, cy - 18, vw + 24, 36)) vol_drag = 1;
+    if (vol_drag) {
+        if (!mouse_down) vol_drag = 0;
+        else { g_vol = (mx - vx) / vw; if (g_vol < 0) g_vol = 0; if (g_vol > 1) g_vol = 1; }
+    }
+    /* right half: the tune of a multi-tune file (previous / number / next), AirPlay at the right edge */
+    const tune_t *tn = g_tune;
+    if (tn && tn->info.songs > 1) {
+        float sx = fold + 8, sw = 34;
+        for (int i = 0; i < 2; i++) {
+            float x = sx + i * (sw + 86);
+            int hv = hit(x, cy - 16, sw, 32);
+            rrect(x, cy - 16, sw, 32, 9, alpha(hv ? VC[0] : EDGE, hv ? 0.30f : 0.35f));
+            if (i == 0) tri(x + 21, cy - 7, x + 21, cy + 7, x + 12, cy, hv ? TXT : DIM);
+            else tri(x + 13, cy - 7, x + 13, cy + 7, x + 22, cy, hv ? TXT : DIM);
+            if (clicked(x, cy - 16, sw, 32)) { change_song(i ? 1 : -1); click = 0; }
+        }
+        char sb[40]; snprintf(sb, sizeof sb, "SONG %d / %d", tn->song, tn->info.songs);
+        text(sx + sw + (86 - text_width(sb, 12)) / 2, cy - 8, 12, VC[0], sb);
+    }
+    draw_airplay_corner(W - M - 16 - 18, cy, 18);
+#else
+    (void)W; (void)H;
+#endif
+}
+static void draw_ui_duo(const vis_t *vs, double t, double dt) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    const float M = 10, BAR = 64;
+    float W = view_w, H = view_h, pw = W / 2, Hc = H - BAR - M;     /* the two pages touch (the fold lies between them); the wide bar below them */
+    g_ox = 0;
+    draw_sidebar(M, M, pw - M, Hc - 2 * M);                          /* left page: the list (PLAYLIST / HVSC ONLINE / FAV), always visible */
+    float mx0 = mx, vw0 = view_w, vh0 = view_h;
+    int cl0 = clickx, rcl0 = rclickx;
+    g_ox = pw; mx -= pw; clickx -= (int)pw; rclickx -= (int)pw;      /* the right page works in its own coordinates */
+    view_w = pw; view_h = Hc + M;                                    /* (the phone layout keeps one margin above the end of its height) */
+    draw_ui_portrait(vs, t, dt);                                     /* right page: the player (header, voices, digi, filter, spectrum, level) */
+    g_ox = 0; mx = mx0; clickx = cl0; rclickx = rcl0; view_w = vw0; view_h = vh0;
+    draw_duo_bar(W, H);
+#else
+    (void)vs; (void)t; (void)dt;
+#endif
+}
 static void draw_ui(const vis_t *vs, double t, double dt) {
     float W = view_w, H = view_h;
     int vol_changed = 0;
@@ -1997,6 +2077,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
         set_additive(0);
     }
 
+    if (g_duo) { draw_ui_duo(vs, t, dt); return; }
     if (g_portrait) { draw_ui_portrait(vs, t, dt); return; }
     const float M = 16, SB = 288;
     /* ---------------- playlist sidebar */
@@ -2605,9 +2686,10 @@ static void iter(void) {
         gfx_drawable_size(win, &dw, &dh);
         int fdw = dw, fdh = dh, vpx = 0, vpy = 0;           /* the whole framebuffer; dw/dh become the part the UI is laid out in */
 #if defined(__APPLE__) && TARGET_OS_IPHONE
+        g_duo = ios_hinge_status(win) >= 2 && ww > wh;               /* iPhone Duo opened: the hinge is open and the picture is wide; it uses the whole window (time and Wi-Fi lie over it) */
         {   /* iOS: keep the UI out of the notch / Dynamic Island, the home bar and the rounded corners (insets in points) */
             float il, it, ir, ib;
-            if (ww > 0 && wh > 0 && !ios_safe_insets(win, &il, &it, &ir, &ib)) {
+            if (!g_duo && ww > 0 && wh > 0 && !ios_safe_insets(win, &il, &it, &ir, &ib)) {
                 float kx = (float)fdw / ww, ky = (float)fdh / wh;
                 int l = (int)(il * kx), t = (int)(it * ky), r = (int)(ir * kx), b = (int)(ib * ky);
                 if (l + r < fdw / 3 && t + b < fdh / 3) { vpx = l; vpy = b; dw = fdw - l - r; dh = fdh - t - b; }      /* GL counts from below: the bottom inset is the y offset */
@@ -2616,7 +2698,12 @@ static void iter(void) {
 #endif
         /* portrait (aspect < 0.8) or too small for landscape: narrow stacked layout, virtual width 440 */
         g_portrait = dw * 10 < dh * 12 || dw < 640 || dh < 430;      /* aspect < 1.2: tablets upright, phones */
-        if (g_portrait) {                                              /* virtual width 440, but at least 640 high (tablets are wider than phones) */
+        if (g_duo) g_portrait = 1;                                   /* the phone layout is the right page, the list on the left works like on the phone */
+        if (g_duo) {                                                   /* two pages side by side, 2 x 440 */
+            view_scale = (float)dw / 920.0f;
+            if ((float)dh / 640.0f < view_scale) view_scale = (float)dh / 640.0f;
+        }
+        else if (g_portrait) {                                              /* virtual width 440, but at least 640 high (tablets are wider than phones) */
             view_scale = (float)dw / 440.0f;
             if ((float)dh / 640.0f < view_scale) view_scale = (float)dh / 640.0f;
         }

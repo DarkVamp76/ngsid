@@ -1481,6 +1481,7 @@ static void draw_orb(float x, float y, float w, float h, float dtf) {
 
 /* ---- playlist / HVSC browser panel (sidebar in landscape, full overlay in portrait: tap selects, drag scrolls) */
 static int sb_pd, sb_moved, sb_tap, sb_pressed;
+static int ctx_swallow;                                  /* a tap that hit the context menu (or closed it) must not select the row below when the finger lifts */
 static int lp_on, lp_fired, lp_swallow, lp_x, lp_y;     /* long press on a touch screen = right click */
 static Uint32 lp_t;
 static float sb_py0, sb_sc0;
@@ -1568,7 +1569,8 @@ static void draw_sidebar(float x, float y, float w, float h) {
         if (mouse_down) {
             if (!sb_pd && mx >= x && mx < x + w && my >= y && my < y + h) { sb_pd = 1; sb_py0 = my; sb_moved = 0; sb_pressed = 1; }
             if (sb_pd && fabsf(my - sb_py0) > 8) sb_moved = 1;
-        } else if (sb_pd) { sb_pd = 0; if (!sb_moved && !lp_swallow) sb_tap = 1; lp_swallow = 0; }
+        } else if (sb_pd) { sb_pd = 0; if (!sb_moved && !lp_swallow && !ctx_swallow) sb_tap = 1; lp_swallow = 0; ctx_swallow = 0; }
+        else ctx_swallow = 0;
     }
         card(x, y, w, h, 0);
         float tw1 = text_width("PLAYLIST", 13), tw2 = text_width("HVSC ONLINE", 13), tw3 = text_width("FAV", 13);
@@ -2601,7 +2603,7 @@ static void iter(void) {
                 int jj = (int)((clicky - ctx_y - 1) / CTX_ROW);
                 if (jj <= 0) ctx_share(); else if (jj == 1) ctx_info(); else if (ctx_n() == 3) fav_toggle(ctx_rel);
             }
-            ctx_on = 0; click = 0;
+            ctx_on = 0; click = 0; ctx_swallow = 1;
         }
         if (rclick && ctx_on) ctx_on = 0;
 

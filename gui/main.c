@@ -451,6 +451,7 @@ static void add_file(const char *path) {
 /* ---- favorites: tunes of the online HVSC (their path in the HVSC), kept in a text file with one path per line */
 typedef struct { char *rel; char label[128]; } fav_t;
 static fav_t *fav;
+static void fav_remember(const char *rel);
 static int nfav, fav_mode;                               /* fav_mode: the sidebar shows the favorites (then browse is 0) */
 static float fav_scroll;
 static int fav_find(const char *rel) {
@@ -623,6 +624,7 @@ static int job_fn(void *ud) {
 
 static void job_start(int kind, const char *path) {
     if (SDL_AtomicGet(&job.state)) return;
+    if (kind == 1) fav_remember(path);                 /* a favorite that starts is remembered for the next launch */
 #ifdef __EMSCRIPTEN__
     /* no threads in the browser: the job runs right here (synchronous request to the proxy) */
     job.kind = kind;
@@ -933,6 +935,54 @@ static void fav_load(void) {
     fclose(f);
 }
 #endif
+
+/* the last favorite that was played: ~/.config/ngsid/lastfav.txt, in the browser the local storage key ngsid_lastfav */
+static char fav_last[800];
+#ifdef __EMSCRIPTEN__
+static void fav_last_save(void) {
+    EM_ASM({ try { localStorage.setItem('ngsid_lastfav', UTF8ToString($0)); } catch (e) {} }, fav_last);
+}
+static void fav_last_load(void) {
+    EM_ASM({
+        var v = '';
+        try { v = localStorage.getItem('ngsid_lastfav') || ''; } catch (e) {}
+        var b = new TextEncoder().encode(v);
+        var n = Math.min(b.length, $1 - 1);
+        HEAPU8.set(b.subarray(0, n), $0); HEAPU8[$0 + n] = 0;
+    }, fav_last, (int)sizeof fav_last);
+}
+#else
+static int fav_last_file(char *out, size_t cap, int mk) {
+    char p[1000];
+    if (fav_file(p, sizeof p, mk)) return -1;
+    char *sl = strrchr(p, '/');
+    if (!sl) return -1;
+    snprintf(out, cap, "%.*s/lastfav.txt", (int)(sl - p), p);
+    return 0;
+}
+static void fav_last_save(void) {
+    char path[1100];
+    if (fav_last_file(path, sizeof path, 1)) return;
+    FILE *f = fopen(path, "wb");
+    if (f) { fputs(fav_last, f); fclose(f); }
+}
+static void fav_last_load(void) {
+    char path[1100];
+    fav_last[0] = 0;
+    if (fav_last_file(path, sizeof path, 0)) return;
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    size_t n = fread(fav_last, 1, sizeof fav_last - 1, f);
+    fav_last[n] = 0;
+    fclose(f);
+    fav_last[strcspn(fav_last, "\r\n")] = 0;
+}
+#endif
+static void fav_remember(const char *rel) {
+    if (fav_find(rel) < 0 || !strcmp(fav_last, rel)) return;
+    snprintf(fav_last, sizeof fav_last, "%s", rel);
+    fav_last_save();
+}
 static void fav_toggle(const char *rel) {
     int i = fav_find(rel);
     if (i >= 0) {
@@ -2652,7 +2702,10 @@ int main(int argc, char **argv) {
     if (getenv("NGSID_TEST_FAV")) fav_mode = 1;                     /* test hook: start with the FAV tab */
     if (getenv("NGSID_TEST_TOGGLE")) fav_toggle(getenv("NGSID_TEST_TOGGLE"));   /* test hook: favorite on / off for this HVSC path at the start */
     if (getenv("NGSID_TEST_CTX") && nfav) { snprintf(ctx_rel, sizeof ctx_rel, "%s", fav[atoi(getenv("NGSID_TEST_CTX")) % nfav].rel); ctx_on = 1; ctx_x = 60; ctx_y = 60; }   /* test hook: the open context menu */
-    if (!npl && !shot) {   /* nothing given: look for SID files in ~/Musik, then ~/Music */
+    fav_last_load();
+    int fav_start = !npl && !shot && nfav && !getenv("NGSID_TEST_FAV");    /* nothing given and there are favorites: start with them */
+    if (fav_start) { browse = 0; fav_mode = 1; }
+    if (!npl && !shot && !fav_start) {   /* nothing given: look for SID files in ~/Musik, then ~/Music */
         const char *home = getenv("HOME");
         static const char *const dirs[] = { "Musik", "Music" };
         for (int i = 0; home && *home && i < 2 && !npl; i++) {
@@ -2663,6 +2716,9 @@ int main(int argc, char **argv) {
     }
     if (npl) play_index(0, first_song);
 #ifndef __EMSCRIPTEN__
+    else if (fav_start) {      /* the last favorite that was played, or the first one */
+        job_start(1, fav_find(fav_last) >= 0 ? fav_last : fav[0].rel);
+    }
     else if (!shot) {
 #if (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(NG_NET_NATIVE)
         /* nothing to play: fetch one tune from the HVSC right away (not bundled with the app), the browser opens in the background */

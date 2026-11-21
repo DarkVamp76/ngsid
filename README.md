@@ -40,7 +40,7 @@ The first `make` downloads libsidplayfp 2.16.1 (checksum verified) and builds it
 Keys: `Space` pause, `Left/Right` song, `Up/Down` file, `1`-`3` mute voices, `4` mute digi, `+`/`-` volume,
 `R` restart, `H` favorite on / off, `F` / `F11` fullscreen, `Esc` quit. Mouse: click a voice card to mute it,
 click the playlist, drag the volume bar. Right click a tune of the online HVSC (Share, Info, Add Favorite):
-the FAV tab keeps your favorites in `~/.config/ngsid/favorites.txt` (in the browser: local storage); nothing is uploaded.
+the FAV tab keeps your favorites in `~/.config/ngsid/favorites.txt` (in the browser: local storage); nothing is uploaded. Started without a file or folder, ngSid opens the FAV tab and plays the favorite you listened to last (`lastfav.txt` next to the favorites; in the browser the tab is selected, nothing starts by itself).
 
 Options:
 

@@ -2357,7 +2357,7 @@ static void audio_watch(void) {
     int ev = ios_audio_event_poll();
     if (ev && tn - last_try < 1500) ev = 0;                                 /* the notifications that our own reopening causes */
     if (ev) { if (ev & 2) g_paused = 1; recover_at = tn + 400; }
-    if (recover_at && (int)(tn - recover_at) >= 0) { recover_at = 0; audio_recover(); last_try = tn; last_t = tn; }
+    if (recover_at && !g_paused && (int)(tn - recover_at) >= 0) { recover_at = 0; audio_recover(); last_try = tn; last_t = tn; }   /* paused: do not reopen the output (that takes the audio session from the app that plays now); done when playing again */
     int should = g_tune && g_tune->e && !g_paused;
     uint64_t fr = g_vis.frames;
     if (!should || fr != last_frames) { last_frames = fr; last_t = tn; return; }

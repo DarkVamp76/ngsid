@@ -54,6 +54,7 @@ int ios_safe_insets(SDL_Window *win, float *l, float *t, float *r, float *b);
 void ios_media_setup(void);                                                       /* lock screen / CarPlay: Now Playing and the remote commands */
 void ios_media_update(const char *title, const char *artist, const char *album, int playing, double pos, double duration);
 int ios_media_poll(void);                                                         /* a remote command: 0 play, 1 pause, 2 next, 3 previous, -1 none */
+void ios_media_set_cover(const unsigned char *px, int w, int h);                 /* the cover for the lock screen: RGBA, opaque, top row first; NULL = none */
 void ios_audio_longform(void);                                                    /* AirPlay 2 (HomePod) needs the long-form route sharing policy */
 void ios_airplay_place(SDL_Window *win, float x, float y, float size, int visible);   /* the native AirPlay button over the window (points) */
 float ios_output_latency_ms(void);                                                /* latency of the output route in ms (AirPlay: ~2000) */
@@ -2362,8 +2363,43 @@ static void audio_watch(void) {
 }
 /* Lock screen / Control Center / CarPlay: title, author, released + tune number and the position go to Now Playing when something changed (and every 15 s); the remote
  * commands (0 play, 1 pause, 2 next tune, 3 previous tune) are picked up here. */
+/* The cover of the lock screen / Control Center: the C64 of the chip model (6581 or 8580) in the middle of a dark square, drawn once per model (bilinear, the picture is premultiplied). */
+#define COVER_PX 512
+static void ios_cover_set(int idx) {
+    static unsigned char buf[COVER_PX * COVER_PX * 4];
+    const unsigned char *src = idx ? c64_8580_rgba : c64_6581_rgba;
+    int sw = idx ? C64_8580_W : C64_6581_W, sh = idx ? C64_8580_H : C64_6581_H;
+    float k = (float)COVER_PX * 0.86f / (float)sw, dw = sw * k, dh = sh * k, x0 = (COVER_PX - dw) / 2, y0 = (COVER_PX - dh) / 2;
+    for (int y = 0; y < COVER_PX; y++) {
+        float t = (float)y / (float)COVER_PX;
+        float bg[3] = { 12 + 10 * t, 16 + 12 * t, 30 + 18 * t };                          /* a soft dark gradient, like the app background */
+        for (int x = 0; x < COVER_PX; x++) {
+            float fx = (x + 0.5f - x0) / k - 0.5f, fy = (y + 0.5f - y0) / k - 0.5f, c[4] = { 0, 0, 0, 0 };
+            if (fx > -1 && fy > -1 && fx < sw && fy < sh) {
+                int ix = (int)floorf(fx), iy = (int)floorf(fy);
+                float ax = fx - (float)ix, ay = fy - (float)iy;
+                for (int dy = 0; dy < 2; dy++) for (int dx = 0; dx < 2; dx++) {
+                    int px = ix + dx, py = iy + dy;
+                    float w = (dx ? ax : 1 - ax) * (dy ? ay : 1 - ay);
+                    if (px < 0 || py < 0 || px >= sw || py >= sh) continue;
+                    const unsigned char *q = src + ((size_t)py * sw + px) * 4;
+                    for (int i = 0; i < 4; i++) c[i] += w * (float)q[i];
+                }
+            }
+            float inv = 1.0f - c[3] / 255.0f;
+            unsigned char *o = buf + ((size_t)y * COVER_PX + x) * 4;
+            for (int i = 0; i < 3; i++) { float v = c[i] + bg[i] * inv; o[i] = (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v); }
+            o[3] = 255;
+        }
+    }
+    ios_media_set_cover(buf, COVER_PX, COVER_PX);
+}
 static void ios_media_sync(void) {
     audio_watch();
+    {   static int cover_idx = -1;
+        int idx = g_tune && g_tune->model[0] == 8580 ? 1 : 0;
+        if (g_tune && idx != cover_idx) { cover_idx = idx; ios_cover_set(idx); }
+    }
     int c; while ((c = ios_media_poll()) >= 0) {
         if (c == 0) { g_paused = 0; if (!g_dev || SDL_GetAudioDeviceStatus(g_dev) != SDL_AUDIO_PLAYING) audio_recover(); }
         else if (c == 1) g_paused = 1;

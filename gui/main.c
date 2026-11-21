@@ -551,6 +551,14 @@ static void play_index(int idx, int song) {
 static int browse_cur_row(void);
 static int browse;                       /* sidebar shows the HVSC browser instead of the playlist */
 static char rpath[768];                  /* current folder, "" = root, else "MUSICIANS/H/" */
+#if defined(__APPLE__) && TARGET_OS_TV
+#define NG_TV 1                                  /* Apple TV: the browser is fixed at MUSICIANS (nothing above it), no tabs, the remote steers */
+#define BR_ROOT "MUSICIANS/"
+#else
+#define NG_TV 0
+#define BR_ROOT ""
+#endif
+static int br_at_root(void) { return !strcmp(rpath, BR_ROOT) || (NG_TV && !rpath[0]); }          /* the top of the browser: the HVSC root, on the Apple TV MUSICIANS/ */
 static hvsc_entry *be;
 static int nbe;
 static float br_scroll;
@@ -662,7 +670,7 @@ static int browse_cur_row(void) {
     size_t rl = strlen(rpath);
     if (strncmp(pl[cur].rel, rpath, rl)) return -1;
     const char *rest = pl[cur].rel + rl;
-    int off = rpath[0] ? 1 : 0;
+    int off = br_at_root() ? 0 : 1;
     for (int i = 0; i < nbe; i++)
         if (!be[i].dir && !strcmp(be[i].name, rest)) return i + off;
     return -1;
@@ -701,11 +709,11 @@ static void job_poll(void) {
 
 static void browse_open(void) {
     browse = 1; fav_mode = 0;
-    if (!nbe && !rpath[0] && !SDL_AtomicGet(&job.state)) job_start(0, "");
+    if (!nbe && br_at_root() && !SDL_AtomicGet(&job.state)) job_start(0, BR_ROOT);
 }
 
 static void browse_up(void) {
-    if (!rpath[0]) return;
+    if (br_at_root()) return;
     char up[768];
     snprintf(up, sizeof up, "%s", rpath);
     size_t l = strlen(up);
@@ -718,7 +726,7 @@ static void browse_up(void) {
 
 /* row 0 is ".." below the root, then the entries */
 static void browse_activate(int row) {
-    int off = rpath[0] ? 1 : 0;
+    int off = br_at_root() ? 0 : 1;
     if (off && row == 0) { browse_up(); return; }
     int i = row - off;
     if (i < 0 || i >= nbe) return;
@@ -728,7 +736,7 @@ static void browse_activate(int row) {
 }
 
 static void browse_move(int delta) {
-    int count = nbe + (rpath[0] ? 1 : 0);
+    int count = nbe + (br_at_root() ? 0 : 1);
     if (count <= 0) return;
     br_sel += delta;
     if (br_sel < 0) br_sel = 0;
@@ -751,7 +759,7 @@ static void change_file(int delta) {
         return;
     }
     if (browse && nbe) {                       /* HVSC Online is shown: step through the tunes of that folder, not through the playlist */
-        int off = rpath[0] ? 1 : 0, cr = browse_cur_row(), start = cr >= 0 ? cr - off : (delta > 0 ? -1 : nbe), found = -1;
+        int off = br_at_root() ? 0 : 1, cr = browse_cur_row(), start = cr >= 0 ? cr - off : (delta > 0 ? -1 : nbe), found = -1;
         for (int k = 1; k <= nbe; k++) {
             int i = ((start + delta * k) % nbe + nbe) % nbe;
             if (!be[i].dir) { found = i; break; }
@@ -1587,17 +1595,24 @@ static void draw_sidebar(float x, float y, float w, float h) {
         float tw1 = text_width("PLAYLIST", 13), tw2 = text_width("HVSC ONLINE", 13), tw3 = text_width("FAV", 13);
         float t2 = x + 18 + tw1 + 22, t3 = t2 + tw2 + 22;
         int in_pl = !browse && !fav_mode;
+        if (NG_TV) {
+            browse = 1; fav_mode = 0;
+            text(x + 18, y + 12, 20, TXT, "HVSC");
+            text(x + 18 + text_width("HVSC", 20) + 12, y + 14, 14, VC[2], "MUSICIANS");
+        } else
         if (g_portrait) {                 /* touch: real tab buttons instead of plain text */
             rrect(x + 8, y + 6, tw1 + 20, 30, 8, in_pl ? alpha(VC[2], 0.25f) : alpha(FAINT, 0.16f));
             rrect(t2 - 10, y + 6, tw2 + 20, 30, 8, browse ? alpha(VC[2], 0.25f) : alpha(FAINT, 0.16f));
             rrect(t3 - 10, y + 6, tw3 + 20, 30, 8, fav_mode ? alpha(VC[2], 0.25f) : alpha(FAINT, 0.16f));
         }
+        if (!NG_TV) {
         text(x + 18, y + 14, 13, in_pl ? TXT : FAINT, "PLAYLIST");
         text(t2, y + 14, 13, browse ? TXT : FAINT, "HVSC ONLINE");
         text(t3, y + 14, 13, fav_mode ? TXT : FAINT, "FAV");
         if (sb_click(x + 8, y + 6, tw1 + 20, 30)) { browse = 0; fav_mode = 0; click = 0; }
         else if (sb_click(t2 - 10, y + 6, tw2 + 20, 30)) { browse_open(); click = 0; }
         else if (sb_click(t3 - 10, y + 6, tw3 + 20, 30)) { browse = 0; fav_mode = 1; click = 0; }
+        }
         if (g_portrait && !g_duo) {       /* second way out of the overlay: close button (the Duo list stays open) */
             float bx = x + w - 42, by2 = y + 6;
             int hv = hit(bx, by2, 34, 30);
@@ -1605,7 +1620,7 @@ static void draw_sidebar(float x, float y, float w, float h) {
             text(bx + 11, by2 + 7, 14, TXT, "X");
             if (sb_click(bx - 6, by2, 46, 30)) { g_plopen = 0; click = 0; }
         }
-        int boff = rpath[0] ? 1 : 0;
+        int boff = br_at_root() ? 0 : 1;
         int count = fav_mode ? nfav : browse ? nbe + boff : npl;
         char cnt[32];
         snprintf(cnt, sizeof cnt, "%d", fav_mode ? nfav : browse ? nbe : npl);
@@ -1842,7 +1857,7 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
 
     /* ---------------- header */
     float hy = M, hh = g_duo ? 84.0f : 100.0f;
-    const float rpad = g_duo ? 84.0f : 0.0f;                       /* the Duo: time and Wi-Fi of the system lie over the top right corner */
+    const float rpad = g_duo && !NG_TV ? 84.0f : 0.0f;                       /* the Duo: time and Wi-Fi of the system lie over the top right corner */
     card(M, hy, aw, hh, 0);
     {
         char title[160], sub[200];
@@ -1981,7 +1996,7 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
 }
 
 static void draw_duo_bar(float W, float H) {
-#if defined(__APPLE__) && TARGET_OS_IPHONE
+#if defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_TV
     const float M = 10, BH = 64;
     float by = H - M - BH, cy = by + BH / 2, r = 20, fold = W / 2;
     card(M, by, W - 2 * M, BH, 0);
@@ -2028,13 +2043,32 @@ static void draw_duo_bar(float W, float H) {
         char sb[40]; snprintf(sb, sizeof sb, "SONG %d / %d", tn->song, tn->info.songs);
         text(sx + sw + (86 - text_width(sb, 12)) / 2, cy - 8, 12, VC[0], sb);
     }
+#if TARGET_OS_TV
+    text_right(W - M - 20, cy - 16, 12, DIM, "UP / DOWN  choose");
+    text_right(W - M - 20, cy + 2, 12, DIM, "SELECT  play / open      MENU  back      PLAY / PAUSE");
+#else
     draw_airplay_corner(W - M - 16 - 18, cy, 18);
+#endif
 #else
     (void)W; (void)H;
 #endif
 }
 static void draw_ui_duo(const vis_t *vs, double t, double dt) {
-#if defined(__APPLE__) && TARGET_OS_IPHONE
+#if defined(__APPLE__) && TARGET_OS_TV
+    {   /* Apple TV: the narrow list on the left (the focus never leaves it), the player on the rest of the width and the whole height, no bar below: the remote does everything */
+        const float M = 10;
+        float W = view_w, H = view_h, lw = floorf(W * 0.30f);
+        g_ox = 0;
+        draw_sidebar(M, M, lw - M, H - 2 * M);
+        float mx0 = mx, vw0 = view_w, vh0 = view_h;
+        int cl0 = clickx, rcl0 = rclickx;
+        g_ox = lw; mx -= lw; clickx -= (int)lw; rclickx -= (int)lw;
+        view_w = W - lw; view_h = H + M;                            /* (the phone layout keeps one margin above the end of its height) */
+        draw_ui_portrait(vs, t, dt);
+        g_ox = 0; mx = mx0; clickx = cl0; rclickx = rcl0; view_w = vw0; view_h = vh0;
+        return;
+    }
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
     const float M = 10, BAR = 64;
     float W = view_w, H = view_h, pw = W / 2, Hc = H - BAR - M;     /* the two pages touch (the fold lies between them); the wide bar below them */
     g_ox = 0;
@@ -2396,7 +2430,7 @@ EMSCRIPTEN_KEEPALIVE int ng_web_hvsc(const char *what) {
         free(be);
         be = res; nbe = nres;                                   /* the HVSC browser opens in this folder */
         snprintf(rpath, sizeof rpath, "%s", p);
-        br_scroll = 0; br_sel = rpath[0] ? 1 : 0; br_follow = 1;
+        br_scroll = 0; br_sel = br_at_root() ? 0 : 1; br_follow = 1;
         browse = 1; fav_mode = 0;
         if (npl > first) play_index(first, 0); else snprintf(br_msg, sizeof br_msg, "No SID files in this folder");
         return 0;
@@ -2640,8 +2674,8 @@ static void iter(void) {
             }
             case SDL_KEYDOWN:
                 switch (e.key.keysym.sym) {
-                case SDLK_ESCAPE: running = 0; break;
-                case SDLK_SPACE: g_paused = !g_paused; break;
+                case SDLK_ESCAPE: if (NG_TV && browse && !br_at_root()) browse_up(); else running = 0; break;      /* Apple TV: the Menu button goes one level up, at the top it leaves */
+                case SDLK_SPACE: case SDLK_PAUSE: g_paused = !g_paused; break;
                 case SDLK_LEFT: change_song(-1); break;
                 case SDLK_RIGHT: change_song(1); break;
                 case SDLK_UP: if (browse) browse_move(-1); else change_file(-1); break;
@@ -2686,10 +2720,14 @@ static void iter(void) {
         gfx_drawable_size(win, &dw, &dh);
         int fdw = dw, fdh = dh, vpx = 0, vpy = 0;           /* the whole framebuffer; dw/dh become the part the UI is laid out in */
 #if defined(__APPLE__) && TARGET_OS_IPHONE
+#if TARGET_OS_TV
+        g_duo = ww > wh;                                                  /* Apple TV: always the two pages (browser left, player right, 16:9) */
+#else
         g_duo = ios_hinge_status(win) >= 2 && ww > wh;               /* iPhone Duo opened: the hinge is open and the picture is wide; it uses the whole window (time and Wi-Fi lie over it) */
+#endif
         {   /* iOS: keep the UI out of the notch / Dynamic Island, the home bar and the rounded corners (insets in points) */
             float il, it, ir, ib;
-            if (!g_duo && ww > 0 && wh > 0 && !ios_safe_insets(win, &il, &it, &ir, &ib)) {
+            if ((!g_duo || NG_TV) && ww > 0 && wh > 0 && !ios_safe_insets(win, &il, &it, &ir, &ib)) {      /* (the Duo uses the whole window, the television keeps its safe area) */
                 float kx = (float)fdw / ww, ky = (float)fdh / wh;
                 int l = (int)(il * kx), t = (int)(it * ky), r = (int)(ir * kx), b = (int)(ib * ky);
                 if (l + r < fdw / 3 && t + b < fdh / 3) { vpx = l; vpy = b; dw = fdw - l - r; dh = fdh - t - b; }      /* GL counts from below: the bottom inset is the y offset */
@@ -2740,6 +2778,25 @@ static void iter(void) {
         }
         if (rclick && ctx_on) ctx_on = 0;
 
+        {   /* test aid: NGSID_TEST_KEYS="down,down,return,menu,play" one key per 1.5 s, the first after 12 s (the Apple TV remote cannot be pressed from a script) */
+            static char *kbuf; static char *kv[64]; static int nk = -1, ki; static Uint32 kt;
+            if (nk < 0) {
+                const char *e = getenv("NGSID_TEST_KEYS"); nk = 0;
+                if (e) { kbuf = strdup(e); for (char *t = strtok(kbuf, ","); t && nk < 64; t = strtok(NULL, ",")) kv[nk++] = t; }
+                kt = SDL_GetTicks() + 12000;
+            }
+            if (ki < nk && SDL_GetTicks() > kt) {
+                static const struct { const char *n; SDL_Keycode k; } K[] = { { "up", SDLK_UP }, { "down", SDLK_DOWN }, { "left", SDLK_LEFT }, { "right", SDLK_RIGHT }, { "return", SDLK_RETURN }, { "menu", SDLK_ESCAPE }, { "play", SDLK_PAUSE } };
+                for (size_t j = 0; j < sizeof K / sizeof *K; j++) if (!strcmp(kv[ki], K[j].n)) { SDL_Event ev; SDL_zero(ev); ev.type = SDL_KEYDOWN; ev.key.keysym.sym = K[j].k; SDL_PushEvent(&ev); }
+                ki++; kt = SDL_GetTicks() + 1500;
+            }
+        }
+#if defined(__APPLE__) && TARGET_OS_TV
+        {   /* Apple TV: the browser has no tab to tap, so its first listing is retried until it is there (the first try collides with the start tune that is fetched at the same time) */
+            static Uint32 last_try;
+            if (!nbe && br_at_root() && !SDL_AtomicGet(&job.state) && SDL_GetTicks() - last_try > 3000) { last_try = SDL_GetTicks(); job_start(0, BR_ROOT); }
+        }
+#endif
         job_poll();
         Uint64 now = SDL_GetPerformanceCounter();
         double dt = (double)(now - tlast) / freq;
@@ -2876,7 +2933,7 @@ int main(int argc, char **argv) {
     if (getenv("NGSID_TEST_TOGGLE")) fav_toggle(getenv("NGSID_TEST_TOGGLE"));   /* test hook: favorite on / off for this HVSC path at the start */
     if (getenv("NGSID_TEST_CTX") && nfav) { snprintf(ctx_rel, sizeof ctx_rel, "%s", fav[atoi(getenv("NGSID_TEST_CTX")) % nfav].rel); ctx_on = 1; ctx_x = 60; ctx_y = 60; }   /* test hook: the open context menu */
     fav_last_load();
-    int fav_start = !npl && !shot && nfav && !getenv("NGSID_TEST_FAV");    /* nothing given and there are favorites: start with them */
+    int fav_start = !npl && !shot && nfav && !getenv("NGSID_TEST_FAV") && !NG_TV;    /* nothing given and there are favorites: start with them */
     if (fav_start) { browse = 0; fav_mode = 1; }
     if (!npl && !shot && !fav_start) {   /* nothing given: look for SID files in ~/Musik, then ~/Music */
         const char *home = getenv("HOME");

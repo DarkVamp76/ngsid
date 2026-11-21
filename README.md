@@ -38,8 +38,9 @@ The first `make` downloads libsidplayfp 2.16.1 (checksum verified) and builds it
     ./ngSid -s 2 tune.sid     # start with song 2
 
 Keys: `Space` pause, `Left/Right` song, `Up/Down` file, `1`-`3` mute voices, `4` mute digi, `+`/`-` volume,
-`R` restart, `F` / `F11` fullscreen, `Esc` quit. Mouse: click a voice card to mute it,
-click the playlist, drag the volume bar.
+`R` restart, `H` favorite on / off, `F` / `F11` fullscreen, `Esc` quit. Mouse: click a voice card to mute it,
+click the playlist, drag the volume bar. Right click a tune of the online HVSC (Share, Info, Add Favorite):
+the FAV tab keeps your favorites in `~/.config/ngsid/favorites.txt` (in the browser: local storage); nothing is uploaded.
 
 Options:
 

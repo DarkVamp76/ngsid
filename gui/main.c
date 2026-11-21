@@ -448,6 +448,34 @@ static void add_file(const char *path) {
     npl++;
 }
 
+/* ---- favorites: tunes of the online HVSC (their path in the HVSC), kept in a text file with one path per line */
+typedef struct { char *rel; char label[128]; } fav_t;
+static fav_t *fav;
+static int nfav, fav_mode;                               /* fav_mode: the sidebar shows the favorites (then browse is 0) */
+static float fav_scroll;
+static int fav_find(const char *rel) {
+    for (int i = 0; i < nfav; i++) if (!strcmp(fav[i].rel, rel)) return i;
+    return -1;
+}
+static int fav_cur(void) { return cur >= 0 && cur < npl && pl[cur].rel ? fav_find(pl[cur].rel) : -1; }
+static void fav_label(const char *rel, char *out, size_t cap) {
+    const char *b = strrchr(rel, '/');
+    b = b ? b + 1 : rel;
+    char tmp[200];
+    utf8_to_latin1(b, tmp, sizeof tmp);
+    size_t l = strlen(tmp);
+    if (l > 4 && !strcasecmp(tmp + l - 4, ".sid")) tmp[l - 4] = 0;
+    for (char *q = tmp; *q; q++) if (*q == '_') *q = ' ';
+    snprintf(out, cap, "%s", tmp);
+}
+static void fav_add_raw(const char *rel) {
+    if (!*rel || fav_find(rel) >= 0) return;
+    fav = (fav_t *)realloc(fav, (size_t)(nfav + 1) * sizeof *fav);
+    fav[nfav].rel = strdup(rel);
+    fav_label(rel, fav[nfav].label, sizeof fav[nfav].label);
+    nfav++;
+}
+
 static int cmp_entry(const void *a, const void *b) { return strcasecmp(((const entry *)a)->path, ((const entry *)b)->path); }
 
 static void add_path(const char *path, int depth) {
@@ -658,7 +686,7 @@ static void job_poll(void) {
 }
 
 static void browse_open(void) {
-    browse = 1;
+    browse = 1; fav_mode = 0;
     if (!nbe && !rpath[0] && !SDL_AtomicGet(&job.state)) job_start(0, "");
 }
 
@@ -702,6 +730,12 @@ static void change_song(int delta) {
 }
 
 static void change_file(int delta) {
+    if (fav_mode && nfav) {                    /* FAV is shown: step through the favorites */
+        if (SDL_AtomicGet(&job.state)) return;
+        int c = fav_cur(), start = c >= 0 ? c : (delta > 0 ? -1 : nfav);
+        job_start(1, fav[((start + delta) % nfav + nfav) % nfav].rel);
+        return;
+    }
     if (browse && nbe) {                       /* HVSC Online is shown: step through the tunes of that folder, not through the playlist */
         int off = rpath[0] ? 1 : 0, cr = browse_cur_row(), start = cr >= 0 ? cr - off : (delta > 0 ? -1 : nbe), found = -1;
         for (int k = 1; k <= nbe; k++) {
@@ -829,9 +863,90 @@ static int click, clickx, clicky, mouse_down, vol_drag;
 static int rclick, rclickx, rclicky;                       /* right mouse button */
 static int ctx_on; static float ctx_x, ctx_y; static char ctx_rel[800];   /* context menu (Share / Info) of an HVSC tune */
 static float toast_t; static char toast_txt[48];
-#define CTX_W 120.0f
-#define CTX_H 62.0f
+#define CTX_W 150.0f
 #define CTX_ROW 30.0f
+static int ctx_n(void) { size_t l = strlen(ctx_rel); return l && ctx_rel[l - 1] == '/' ? 2 : 3; }   /* a folder has no Favorite item */
+static float ctx_h(void) { return 2 + ctx_n() * CTX_ROW; }
+
+/* favorites file: ~/.config/ngsid/favorites.txt (on iOS and macOS the home is the app container), in the browser the local storage */
+static void fav_parse(char *txt) {
+    for (char *line = strtok(txt, "\r\n"); line; line = strtok(NULL, "\r\n")) fav_add_raw(line);
+}
+static void fav_text(char *out, size_t cap) {
+    size_t o = 0;
+    out[0] = 0;
+    for (int i = 0; i < nfav; i++) {
+        size_t l = strlen(fav[i].rel);
+        if (o + l + 2 >= cap) break;
+        memcpy(out + o, fav[i].rel, l); o += l; out[o++] = '\n'; out[o] = 0;
+    }
+}
+#ifdef __EMSCRIPTEN__
+static char fav_buf[1 << 16];
+static void fav_save(void) {
+    fav_text(fav_buf, sizeof fav_buf);
+    EM_ASM({ try { localStorage.setItem('ngsid_favorites', UTF8ToString($0)); } catch (e) {} }, fav_buf);
+}
+static void fav_load(void) {
+    EM_ASM({
+        var v = '';
+        try { v = localStorage.getItem('ngsid_favorites') || ''; } catch (e) {}
+        var b = new TextEncoder().encode(v);
+        var n = Math.min(b.length, $1 - 1);
+        HEAPU8.set(b.subarray(0, n), $0); HEAPU8[$0 + n] = 0;
+    }, fav_buf, (int)sizeof fav_buf);
+    fav_parse(fav_buf);
+}
+#else
+static int fav_file(char *out, size_t cap, int mk) {
+    const char *xc = getenv("XDG_CONFIG_HOME"), *h = getenv("HOME");
+    char dir[900];
+    if (xc && *xc) snprintf(dir, sizeof dir, "%s/ngsid", xc);
+    else if (h && *h) snprintf(dir, sizeof dir, "%s/.config/ngsid", h);
+    else return -1;
+    if (mk) {
+        char p[900];
+        snprintf(p, sizeof p, "%s", dir);
+        for (char *q = p + 1; *q; q++) if (*q == '/') { *q = 0; mkdir(p, 0755); *q = '/'; }
+        mkdir(p, 0755);
+    }
+    snprintf(out, cap, "%s/favorites.txt", dir);
+    return 0;
+}
+static void fav_save(void) {
+    char path[1000], *buf = (char *)malloc(1 << 20);
+    if (!buf) return;
+    if (fav_file(path, sizeof path, 1) == 0) {
+        fav_text(buf, 1 << 20);
+        FILE *f = fopen(path, "wb");
+        if (f) { fwrite(buf, 1, strlen(buf), f); fclose(f); }
+    }
+    free(buf);
+}
+static void fav_load(void) {
+    char path[1000];
+    if (fav_file(path, sizeof path, 0)) return;
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    char *buf = (char *)calloc(1, (1 << 20) + 1);
+    if (buf) { size_t n = fread(buf, 1, 1 << 20, f); buf[n] = 0; fav_parse(buf); free(buf); }
+    fclose(f);
+}
+#endif
+static void fav_toggle(const char *rel) {
+    int i = fav_find(rel);
+    if (i >= 0) {
+        free(fav[i].rel);
+        memmove(fav + i, fav + i + 1, (size_t)(nfav - i - 1) * sizeof *fav);
+        nfav--;
+        snprintf(toast_txt, sizeof toast_txt, "Removed from favorites");
+    } else {
+        fav_add_raw(rel);
+        snprintf(toast_txt, sizeof toast_txt, "Added to favorites");
+    }
+    toast_t = 2.0f;
+    fav_save();
+}
 static int hit(float x, float y, float w, float h) { return mx >= x && mx < x + w && my >= y && my < y + h; }
 static int clicked(float x, float y, float w, float h) { return click && clickx >= x && clickx < x + w && clicky >= y && clicky < y + h; }
 
@@ -1371,17 +1486,17 @@ static void ctx_open(const char *rel) {
     snprintf(ctx_rel, sizeof ctx_rel, "%s", rel);
     ctx_on = 1; rclick = 0;
     ctx_x = (float)rclickx; ctx_y = (float)rclicky;
-    if (g_mobile || g_portrait) ctx_y -= CTX_H + 18;          /* touch: the menu opens above the finger */
+    if (g_mobile || g_portrait) ctx_y -= ctx_h() + 18;          /* touch: the menu opens above the finger */
     if (ctx_y < 4) ctx_y = 4;
     if (ctx_x + CTX_W > view_w - 4) ctx_x = view_w - 4 - CTX_W;
-    if (ctx_y + CTX_H > view_h - 4) ctx_y = view_h - 4 - CTX_H;
+    if (ctx_y + ctx_h() > view_h - 4) ctx_y = view_h - 4 - ctx_h();
 }
 static void draw_ctx_menu(double dt) {
     if (ctx_on) {
-        static const char *const item[2] = { "Share", "Info" };
-        rrect(ctx_x - 1, ctx_y - 1, CTX_W + 2, CTX_H + 2, 9, alpha(EDGE, 0.9f));
-        rrect(ctx_x, ctx_y, CTX_W, CTX_H, 8, CARDHI);
-        for (int j = 0; j < 2; j++) {
+        const char *const item[3] = { "Share", "Info", fav_find(ctx_rel) >= 0 ? "Remove Favorite" : "Add Favorite" };
+        rrect(ctx_x - 1, ctx_y - 1, CTX_W + 2, ctx_h() + 2, 9, alpha(EDGE, 0.9f));
+        rrect(ctx_x, ctx_y, CTX_W, ctx_h(), 8, CARDHI);
+        for (int j = 0; j < ctx_n(); j++) {
             float iy = ctx_y + 1 + j * CTX_ROW;
             int hv = mx >= ctx_x && mx < ctx_x + CTX_W && my >= iy && my < iy + CTX_ROW;
             if (hv) rrect(ctx_x + 3, iy + 2, CTX_W - 6, CTX_ROW - 4, 6, alpha(VC[0], 0.22f));
@@ -1405,16 +1520,20 @@ static void draw_sidebar(float x, float y, float w, float h) {
         } else if (sb_pd) { sb_pd = 0; if (!sb_moved && !lp_swallow) sb_tap = 1; lp_swallow = 0; }
     }
         card(x, y, w, h, 0);
-        float tw1 = text_width("PLAYLIST", 13);
+        float tw1 = text_width("PLAYLIST", 13), tw2 = text_width("HVSC ONLINE", 13), tw3 = text_width("FAV", 13);
+        float t2 = x + 18 + tw1 + 22, t3 = t2 + tw2 + 22;
+        int in_pl = !browse && !fav_mode;
         if (g_portrait) {                 /* touch: real tab buttons instead of plain text */
-            float tw2 = text_width("HVSC ONLINE", 13);
-            rrect(x + 8, y + 6, tw1 + 20, 30, 8, browse ? alpha(FAINT, 0.16f) : alpha(VC[2], 0.25f));
-            rrect(x + 18 + tw1 + 12, y + 6, tw2 + 20, 30, 8, browse ? alpha(VC[2], 0.25f) : alpha(FAINT, 0.16f));
+            rrect(x + 8, y + 6, tw1 + 20, 30, 8, in_pl ? alpha(VC[2], 0.25f) : alpha(FAINT, 0.16f));
+            rrect(t2 - 10, y + 6, tw2 + 20, 30, 8, browse ? alpha(VC[2], 0.25f) : alpha(FAINT, 0.16f));
+            rrect(t3 - 10, y + 6, tw3 + 20, 30, 8, fav_mode ? alpha(VC[2], 0.25f) : alpha(FAINT, 0.16f));
         }
-        text(x + 18, y + 14, 13, browse ? FAINT : TXT, "PLAYLIST");
-        text(x + 18 + tw1 + 22, y + 14, 13, browse ? TXT : FAINT, "HVSC ONLINE");
-        if (sb_click(x + 8, y + 6, tw1 + 20, 30)) { browse = 0; click = 0; }
-        else if (sb_click(x + 18 + tw1 + 12, y + 6, text_width("HVSC ONLINE", 13) + 20, 30)) { browse_open(); click = 0; }
+        text(x + 18, y + 14, 13, in_pl ? TXT : FAINT, "PLAYLIST");
+        text(t2, y + 14, 13, browse ? TXT : FAINT, "HVSC ONLINE");
+        text(t3, y + 14, 13, fav_mode ? TXT : FAINT, "FAV");
+        if (sb_click(x + 8, y + 6, tw1 + 20, 30)) { browse = 0; fav_mode = 0; click = 0; }
+        else if (sb_click(t2 - 10, y + 6, tw2 + 20, 30)) { browse_open(); click = 0; }
+        else if (sb_click(t3 - 10, y + 6, tw3 + 20, 30)) { browse = 0; fav_mode = 1; click = 0; }
         if (g_portrait) {                 /* second way out of the overlay: close button */
             float bx = x + w - 42, by2 = y + 6;
             int hv = hit(bx, by2, 34, 30);
@@ -1423,9 +1542,9 @@ static void draw_sidebar(float x, float y, float w, float h) {
             if (sb_click(bx - 6, by2, 46, 30)) { g_plopen = 0; click = 0; }
         }
         int boff = rpath[0] ? 1 : 0;
-        int count = browse ? nbe + boff : npl;
+        int count = fav_mode ? nfav : browse ? nbe + boff : npl;
         char cnt[32];
-        snprintf(cnt, sizeof cnt, "%d", browse ? nbe : npl);
+        snprintf(cnt, sizeof cnt, "%d", fav_mode ? nfav : browse ? nbe : npl);
         text_right(x + w - (g_portrait ? 54 : 18), y + 14, 13, DIM, cnt);
         float ry = y + 44, rh = touch ? 36 : 28, area = h - 44 - 40;
         if (browse) {
@@ -1435,12 +1554,13 @@ static void draw_sidebar(float x, float y, float w, float h) {
             text(x + 18, ry, 12, FAINT, crumb);
             ry += 22; area -= 22 + 18;
         }
-        float *sc = browse ? &br_scroll : &list_scroll;
+        float *sc = fav_mode ? &fav_scroll : browse ? &br_scroll : &list_scroll;
+        int fc = fav_mode ? fav_cur() : -1;
         if (sb_pressed) sb_sc0 = *sc;
         if (touch && sb_pd && sb_moved) *sc = sb_sc0 + (sb_py0 - my) / rh;
         int vis_rows = (int)(area / rh);
         int maxscroll = count > vis_rows ? count - vis_rows : 0;
-        if (!browse && list_follow && cur >= 0) {
+        if (!browse && !fav_mode && list_follow && cur >= 0) {
             if (cur < *sc) *sc = (float)cur;
             if (cur >= *sc + vis_rows) *sc = (float)(cur - vis_rows + 1);
             list_follow = 0;
@@ -1457,7 +1577,8 @@ static void draw_sidebar(float x, float y, float w, float h) {
             int i = first + r;
             float yy = ry + r * rh;
             if (yy + rh > y + h - 36) break;
-            int isc = !browse && i == cur, anc = 0;
+            int isc = !browse && !fav_mode && i == cur, anc = 0;
+            if (fav_mode) isc = i == fc;
             if (browse) {
                 isc = i == browse_cur_row();
                 if (!isc && i >= boff && be[i - boff].dir && cur >= 0 && pl[cur].rel) {
@@ -1477,7 +1598,9 @@ static void draw_sidebar(float x, float y, float w, float h) {
                 rrect(x + 8, yy, w - 16, rh - 2, 8, alpha(EDGE, 0.25f));
             char lab[260];
             int isdir = 0;
-            if (!browse)
+            if (fav_mode)
+                snprintf(lab, sizeof lab, "%s", fav[i].label);
+            else if (!browse)
                 snprintf(lab, sizeof lab, "%s", pl[i].label);
             else if (boff && i == 0) { snprintf(lab, sizeof lab, ".."); isdir = 1; }
             else {
@@ -1491,7 +1614,7 @@ static void draw_sidebar(float x, float y, float w, float h) {
                 isdir = en->dir;
             }
             float lx = x + 20, lw = w - 52;
-            if (!browse && pl[i].rel) {          /* tune that came from the online HVSC */
+            if (fav_mode || (!browse && pl[i].rel)) {          /* tune that came from the online HVSC */
                 rrect(lx, yy + 6, 26, 17, 4, alpha(VC[2], isc ? 0.32f : 0.20f));
                 text(lx + 4, yy + 8, 11, VC[2], "HV");
                 lx += 33; lw -= 33;
@@ -1499,16 +1622,23 @@ static void draw_sidebar(float x, float y, float w, float h) {
             fit_text(lab, lw, 14);
             text(lx, yy + 5, 14, isc || isdir ? TXT : DIM, lab);
             if (rclick && rclickx >= x + 8 && rclickx < x + w - 8 && rclicky >= yy && rclicky < yy + rh) {
-                if (!browse && pl[i].rel) ctx_open(pl[i].rel);
+                if (fav_mode) ctx_open(fav[i].rel);
+                else if (!browse && pl[i].rel) ctx_open(pl[i].rel);
                 else if (browse && i >= boff) { char rel[800]; snprintf(rel, sizeof rel, "%s%s%s", rpath, be[i - boff].name, be[i - boff].dir ? "/" : ""); ctx_open(rel); }   /* a folder shares as #/PATH/ */
             }
             if (sb_click(x + 8, yy, w - 16, rh)) {
-                if (browse) { br_sel = i; browse_activate(i); } else play_index(i, 0);
+                if (fav_mode) { if (!SDL_AtomicGet(&job.state)) job_start(1, fav[i].rel); }
+                else if (browse) { br_sel = i; browse_activate(i); } else play_index(i, 0);
                 click = 0;
                 if (g_portrait && (!browse || !isdir)) g_plopen = 0;
             }
         }
-        if (!browse && !npl) {
+        if (fav_mode && !nfav) {
+            text(x + 18, y + 60, 14, DIM, "No favorites yet.");
+            text(x + 18, y + 84, 13, FAINT, "Right click a tune in");
+            text(x + 18, y + 102, 13, FAINT, "HVSC ONLINE: Add Favorite.");
+        }
+        if (!browse && !fav_mode && !npl) {
             text(x + 18, y + 60, 14, DIM, "No files.");
             text(x + 18, y + 84, 13, FAINT, "Drag SID files or a");
             text(x + 18, y + 102, 13, FAINT, "folder into the window.");
@@ -2130,7 +2260,7 @@ EMSCRIPTEN_KEEPALIVE int ng_web_hvsc(const char *what) {
         be = res; nbe = nres;                                   /* the HVSC browser opens in this folder */
         snprintf(rpath, sizeof rpath, "%s", p);
         br_scroll = 0; br_sel = rpath[0] ? 1 : 0; br_follow = 1;
-        browse = 1;
+        browse = 1; fav_mode = 0;
         if (npl > first) play_index(first, 0); else snprintf(br_msg, sizeof br_msg, "No SID files in this folder");
         return 0;
     }
@@ -2281,7 +2411,7 @@ static void iter(void) {
                     if (url_hvsc_path(e.drop.file, hp, sizeof hp)) {
                         SDL_free(e.drop.file);
                         size_t hl = strlen(hp);
-                        if (hl && hp[hl - 1] == '/') { browse = 1; g_plopen = 1; job_start(0, hp); }       /* a folder */
+                        if (hl && hp[hl - 1] == '/') { browse = 1; fav_mode = 0; g_plopen = 1; job_start(0, hp); }       /* a folder */
                         else job_start(1, hp);                                                                   /* a tune: fetched from the HVSC and played */
                         break;
                     }
@@ -2306,7 +2436,8 @@ static void iter(void) {
                 case SDLK_HOME: if (browse) browse_move(-100000); break;
                 case SDLK_END: if (browse) browse_move(100000); break;
                 case SDLK_RETURN: case SDLK_KP_ENTER: if (browse) browse_activate(br_sel); break;
-                case SDLK_b: if (browse) browse = 0; else browse_open(); break;
+                case SDLK_b: if (browse) browse = 0; else browse_open(); fav_mode = 0; break;
+                case SDLK_h: if (cur >= 0 && cur < npl && pl[cur].rel) fav_toggle(pl[cur].rel); break;    /* favorite on / off for the tune that plays */
                 case SDLK_v: g_orb = !g_orb; break;
                 case SDLK_BACKSPACE: if (browse) browse_up(); break;
                 case SDLK_r: if (cur >= 0) play_index(cur, cur_song); break;
@@ -2380,8 +2511,9 @@ static void iter(void) {
         if (rclick) { rclickx = (int)(rclickx * k); rclicky = (int)(rclicky * k); }
 #endif
         if (ctx_on && click) {                               /* click on the open menu: Share / Info; any click closes it */
-            if (clickx >= ctx_x && clickx < ctx_x + CTX_W && clicky >= ctx_y && clicky < ctx_y + CTX_H) {
-                if (clicky < ctx_y + 1 + CTX_ROW) ctx_share(); else ctx_info();
+            if (clickx >= ctx_x && clickx < ctx_x + CTX_W && clicky >= ctx_y && clicky < ctx_y + ctx_h()) {
+                int jj = (int)((clicky - ctx_y - 1) / CTX_ROW);
+                if (jj <= 0) ctx_share(); else if (jj == 1) ctx_info(); else if (ctx_n() == 3) fav_toggle(ctx_rel);
             }
             ctx_on = 0; click = 0;
         }
@@ -2516,6 +2648,10 @@ int main(int argc, char **argv) {
         if (h && *h) { snprintf(cp, sizeof cp, "%s/Library/Caches", h); setenv("XDG_CACHE_HOME", cp, 1); }
     }
 #endif
+    fav_load();
+    if (getenv("NGSID_TEST_FAV")) fav_mode = 1;                     /* test hook: start with the FAV tab */
+    if (getenv("NGSID_TEST_TOGGLE")) fav_toggle(getenv("NGSID_TEST_TOGGLE"));   /* test hook: favorite on / off for this HVSC path at the start */
+    if (getenv("NGSID_TEST_CTX") && nfav) { snprintf(ctx_rel, sizeof ctx_rel, "%s", fav[atoi(getenv("NGSID_TEST_CTX")) % nfav].rel); ctx_on = 1; ctx_x = 60; ctx_y = 60; }   /* test hook: the open context menu */
     if (!npl && !shot) {   /* nothing given: look for SID files in ~/Musik, then ~/Music */
         const char *home = getenv("HOME");
         static const char *const dirs[] = { "Musik", "Music" };

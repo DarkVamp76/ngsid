@@ -2732,6 +2732,7 @@ int main(int argc, char **argv) {
         char dp[1024], cp[1100]; const char *h = getenv("HOME");
         if (!ios_music_dir(dp, sizeof dp)) add_path(dp, 0);
         if (h && *h) { snprintf(cp, sizeof cp, "%s/Library/Caches", h); setenv("XDG_CACHE_HOME", cp, 1); }
+        if (h && *h) { snprintf(cp, sizeof cp, "%s/Library/Application Support", h); setenv("XDG_CONFIG_HOME", cp, 1); }   /* favorites.txt and lastfav.txt: the top folder of the container is not writable on iOS */
     }
 #endif
     fav_load();

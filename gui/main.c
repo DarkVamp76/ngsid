@@ -2872,6 +2872,7 @@ int main(int argc, char **argv) {
 #endif
     fav_load();
     if (getenv("NGSID_TEST_FAV")) fav_mode = 1;                     /* test hook: start with the FAV tab */
+    if (getenv("NGSID_TEST_ORB")) g_orb = 1;                        /* test hook: start with the orb instead of the voices */
     if (getenv("NGSID_TEST_TOGGLE")) fav_toggle(getenv("NGSID_TEST_TOGGLE"));   /* test hook: favorite on / off for this HVSC path at the start */
     if (getenv("NGSID_TEST_CTX") && nfav) { snprintf(ctx_rel, sizeof ctx_rel, "%s", fav[atoi(getenv("NGSID_TEST_CTX")) % nfav].rel); ctx_on = 1; ctx_x = 60; ctx_y = 60; }   /* test hook: the open context menu */
     fav_last_load();

@@ -2827,8 +2827,14 @@ static void iter(void) {
                     g_paused = !g_paused;
 #endif
                     break;
+#if defined(__APPLE__) && TARGET_OS_TV
+                case SDLK_LEFT: case SDLK_RIGHT: {   /* Apple TV: left / right switch the view (voices, notes, orb); the tunes of a multi-tune file are not on the remote */
+                    static const int order[3] = { 0, 2, 1 }; int pos = g_orb == 2 ? 1 : (g_orb == 1 ? 2 : 0);
+                    pos = (pos + (e.key.keysym.sym == SDLK_RIGHT ? 1 : 2)) % 3; g_orb = order[pos]; break; }
+#else
                 case SDLK_LEFT: change_song(-1); break;
                 case SDLK_RIGHT: change_song(1); break;
+#endif
                 case SDLK_UP: if (browse) browse_move(-1); else change_file(-1); break;
                 case SDLK_DOWN: if (browse) browse_move(1); else change_file(1); break;
                 case SDLK_PAGEUP: if (browse) browse_move(-10); break;

@@ -2569,6 +2569,17 @@ static void ios_start_idle(void) {
     else if (nfav) job_start(1, fav_find(fav_last) >= 0 ? fav_last : fav[0].rel);
     else job_start(1, "MUSICIANS/F/Feekzoid/A_Tribute_to_Martin_Galway.sid");
 }
+#if defined(__APPLE__) && TARGET_OS_TV
+/* Apple TV: one press of Play/Pause arrives twice, as the key (SDL: PAUSE) and as a remote command of the system (play, pause or toggle, depending on what the system thinks the
+ * state is). All of them are the same press: one toggle, the others within half a second are ignored. */
+static void tv_press_toggle(void) {
+    static Uint32 last; Uint32 t = SDL_GetTicks();
+    if (last && t - last < 500) return;
+    last = t;
+    g_paused = !g_paused;
+    if (!g_paused && (!g_dev || SDL_GetAudioDeviceStatus(g_dev) != SDL_AUDIO_PLAYING)) audio_recover();
+}
+#endif
 static void ios_media_sync(void) {
     audio_watch();
     if (g_launch_bg && ios_app_active()) { g_launch_bg = 0; ios_start_idle(); }        /* the user opened the app: now it may start */
@@ -2577,6 +2588,9 @@ static void ios_media_sync(void) {
         if (g_tune && idx != cover_idx) { cover_idx = idx; ios_cover_set(idx); }
     }
     int c; while ((c = ios_media_poll()) >= 0) {
+#if defined(__APPLE__) && TARGET_OS_TV
+        if (c == 0 || c == 1) { tv_press_toggle(); continue; }      /* play / pause / toggle of the Apple TV remote: one toggle per press */
+#endif
         if (c == 0) { if (g_launch_bg && !g_tune) { g_launch_bg = 0; ios_start_idle(); } g_paused = 0; if (!g_dev || SDL_GetAudioDeviceStatus(g_dev) != SDL_AUDIO_PLAYING) audio_recover(); }
         else if (c == 1) g_paused = 1;
         else if (c == 2) step_tune(1);
@@ -2688,7 +2702,14 @@ static void iter(void) {
             case SDL_KEYDOWN:
                 switch (e.key.keysym.sym) {
                 case SDLK_ESCAPE: if (NG_TV && browse && !br_at_root()) browse_up(); else running = 0; break;      /* Apple TV: the Menu button goes one level up, at the top it leaves */
-                case SDLK_SPACE: case SDLK_PAUSE: g_paused = !g_paused; break;
+                case SDLK_SPACE: g_paused = !g_paused; break;
+                case SDLK_PAUSE:
+#if defined(__APPLE__) && TARGET_OS_TV
+                    tv_press_toggle();
+#else
+                    g_paused = !g_paused;
+#endif
+                    break;
                 case SDLK_LEFT: change_song(-1); break;
                 case SDLK_RIGHT: change_song(1); break;
                 case SDLK_UP: if (browse) browse_move(-1); else change_file(-1); break;
@@ -2800,7 +2821,7 @@ static void iter(void) {
             }
             if (ki < nk && SDL_GetTicks() > kt) {
                 static const struct { const char *n; SDL_Keycode k; } K[] = { { "up", SDLK_UP }, { "down", SDLK_DOWN }, { "left", SDLK_LEFT }, { "right", SDLK_RIGHT }, { "return", SDLK_RETURN }, { "menu", SDLK_ESCAPE }, { "play", SDLK_PAUSE } };
-                for (size_t j = 0; j < sizeof K / sizeof *K; j++) if (!strcmp(kv[ki], K[j].n)) { SDL_Event ev; SDL_zero(ev); ev.type = SDL_KEYDOWN; ev.key.keysym.sym = K[j].k; SDL_PushEvent(&ev); }
+                for (size_t j = 0; j < sizeof K / sizeof *K; j++) if (!strcmp(kv[ki], K[j].n) || (!strcmp(kv[ki], "play2") && K[j].k == SDLK_PAUSE)) { SDL_Event ev; SDL_zero(ev); ev.type = SDL_KEYDOWN; ev.key.keysym.sym = K[j].k; SDL_PushEvent(&ev); if (!strcmp(kv[ki], "play2")) SDL_PushEvent(&ev); }
                 ki++; kt = SDL_GetTicks() + 1500;
             }
         }

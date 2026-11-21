@@ -2397,7 +2397,7 @@ static void cover_text(unsigned char *buf, float x, float y, float size, const u
 static void ios_cover_set(int idx) {
     static unsigned char buf[COVER_PX * COVER_PX * 4];
     const unsigned char *src = idx ? c64_8580_rgba : c64_6581_rgba;
-    int sw = idx ? C64_8580_W : C64_6581_W, sh = idx ? C64_8580_H : C64_6581_H;
+    int sw = idx ? C64_8580_W : C64_6581_W, sh = idx ? 111 : C64_6581_H;           /* the 8580 picture has a pale blue reflection below the case (from row 111): cut off */
     float k = (float)COVER_PX * 0.86f / (float)sw, dw = sw * k, dh = sh * k, x0 = (COVER_PX - dw) / 2, y0 = (float)COVER_PX * 0.40f - dh / 2;      /* a little above the middle: the chip name goes below */
     for (int y = 0; y < COVER_PX; y++) {
         float t = (float)y / (float)COVER_PX;

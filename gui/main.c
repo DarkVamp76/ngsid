@@ -48,12 +48,15 @@
 #include <sys/stat.h>
 
 
+static int g_launch_bg;                    /* iOS: the app was started in the background: no tune starts by itself until it comes to the foreground or gets a play command */
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 /* iOS app glue (ios_glue.m in the private app repo): SDL2 has no safe-area API */
 int ios_safe_insets(SDL_Window *win, float *l, float *t, float *r, float *b);
 void ios_media_setup(void);                                                       /* lock screen / CarPlay: Now Playing and the remote commands */
 void ios_media_update(const char *title, const char *artist, const char *album, int playing, double pos, double duration);
 int ios_media_poll(void);                                                         /* a remote command: 0 play, 1 pause, 2 next, 3 previous, -1 none */
+int ios_launched_in_background(void);                                         /* ios_glue.m: started by the system in the background (CarPlay / lock screen play command): do not play by itself */
+int ios_app_active(void);                                                        /* ios_glue.m: the app is in the foreground */
 void ios_media_set_cover(const unsigned char *px, int w, int h);                 /* the cover for the lock screen: RGBA, opaque, top row first; NULL = none */
 void ios_audio_longform(void);                                                    /* AirPlay 2 (HomePod) needs the long-form route sharing policy */
 void ios_airplay_place(SDL_Window *win, float x, float y, float size, int visible);   /* the native AirPlay button over the window (points) */
@@ -2431,14 +2434,22 @@ static void ios_cover_set(int idx) {
     }
     ios_media_set_cover(buf, COVER_PX, COVER_PX);
 }
+/* the first tune after a start in the background: the first entry of the playlist, the last favorite, or the start tune */
+static void ios_start_idle(void) {
+    if (g_tune || SDL_AtomicGet(&job.state)) return;
+    if (npl) play_index(0, 0);
+    else if (nfav) job_start(1, fav_find(fav_last) >= 0 ? fav_last : fav[0].rel);
+    else job_start(1, "MUSICIANS/F/Feekzoid/A_Tribute_to_Martin_Galway.sid");
+}
 static void ios_media_sync(void) {
     audio_watch();
+    if (g_launch_bg && ios_app_active()) { g_launch_bg = 0; ios_start_idle(); }        /* the user opened the app: now it may start */
     {   static int cover_idx = -1;
         int idx = g_tune && g_tune->model[0] == 8580 ? 1 : 0;
         if (g_tune && idx != cover_idx) { cover_idx = idx; ios_cover_set(idx); }
     }
     int c; while ((c = ios_media_poll()) >= 0) {
-        if (c == 0) { g_paused = 0; if (!g_dev || SDL_GetAudioDeviceStatus(g_dev) != SDL_AUDIO_PLAYING) audio_recover(); }
+        if (c == 0) { if (g_launch_bg && !g_tune) { g_launch_bg = 0; ios_start_idle(); } g_paused = 0; if (!g_dev || SDL_GetAudioDeviceStatus(g_dev) != SDL_AUDIO_PLAYING) audio_recover(); }
         else if (c == 1) g_paused = 1;
         else if (c == 2) step_tune(1);
         else if (c == 3) step_tune(-1);
@@ -2788,15 +2799,18 @@ int main(int argc, char **argv) {
             add_path(dir, 0);
         }
     }
-    if (npl) play_index(0, first_song);
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    g_launch_bg = ios_launched_in_background();
+#endif
+    if (npl) { if (!g_launch_bg) play_index(0, first_song); }
 #ifndef __EMSCRIPTEN__
     else if (fav_start) {      /* the last favorite that was played, or the first one */
-        job_start(1, fav_find(fav_last) >= 0 ? fav_last : fav[0].rel);
+        if (!g_launch_bg) job_start(1, fav_find(fav_last) >= 0 ? fav_last : fav[0].rel);
     }
     else if (!shot) {
 #if (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(NG_NET_NATIVE)
         /* nothing to play: fetch one tune from the HVSC right away (not bundled with the app), the browser opens in the background */
-        job_start(1, "MUSICIANS/F/Feekzoid/A_Tribute_to_Martin_Galway.sid");
+        if (!g_launch_bg) job_start(1, "MUSICIANS/F/Feekzoid/A_Tribute_to_Martin_Galway.sid");
 #endif
         browse_open();   /* nothing given: start in the online HVSC browser */
     }

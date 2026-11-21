@@ -1287,6 +1287,73 @@ static void draw_voice_compact(int c, int v, float x, float y, float w, float h,
     }
 }
 
+/* ---- NOTES view: the notes of the voices run down like a tracker pattern. SID tunes have no pattern, so the rows are read from the voice registers NT_RATE times a second:
+ * the newest row is at the top and moves down, a note shows where a voice starts one (gate on, or another pitch), "===" where the gate goes off, "|" while it is held. */
+#define NT_ROWS 48
+#define NT_RATE 12.0f
+typedef struct { signed char note; unsigned char kind; } nt_cell;      /* kind: 0 empty, 1 note, 2 gate off, 3 noise, 4 held */
+static nt_cell nt_hist[9][NT_ROWS];
+static int nt_pnote[9], nt_pgate[9], nt_pnoise[9];
+static float nt_acc;
+static const tune_t *nt_tune;
+static void nt_push(const vis_t *vs, int ncols) {
+    for (int k = 0; k < 9; k++) memmove(&nt_hist[k][1], &nt_hist[k][0], (NT_ROWS - 1) * sizeof(nt_cell));
+    double clk = g_tune && g_tune->pal ? 985248.0 : 1022727.0;
+    for (int k = 0; k < 9; k++) {
+        nt_cell cell = { -1, 0 };
+        if (k < ncols) {
+            const ngsid_voice_info *vi = &vs->vi[k / 3][k % 3];
+            int gate = (vi->ctrl & 1) && vs->running, noise = (vi->ctrl & 0x80) != 0, note = -1;
+            double hz = vi->freq * clk / 16777216.0;
+            if (vi->freq && hz > 8) { int mi = (int)floor(69 + 12 * log2(hz / 440.0) + 0.5); if (mi >= 0 && mi < 128) note = mi; }
+            if (gate && note >= 0 && (!nt_pgate[k] || note != nt_pnote[k] || noise != nt_pnoise[k])) { cell.note = (signed char)note; cell.kind = noise ? 3 : 1; }
+            else if (!gate && nt_pgate[k]) cell.kind = 2;
+            else if (gate) cell.kind = 4;
+            nt_pgate[k] = gate; nt_pnote[k] = note; nt_pnoise[k] = noise;
+        }
+        nt_hist[k][0] = cell;
+    }
+}
+static void draw_notes(float x, float y, float w, float h, const vis_t *vs, float dtf) {
+    card(x, y, w, h, 0);
+    text(x + 18, y + 10, 12, DIM, "NOTES");
+    const int nsid = g_tune && g_tune->nsid > 1 ? (g_tune->nsid > 3 ? 3 : g_tune->nsid) : 1, ncols = 3 * nsid;
+    if (g_tune != nt_tune) { nt_tune = g_tune; memset(nt_hist, 0, sizeof nt_hist); memset(nt_pnote, 0, sizeof nt_pnote); memset(nt_pgate, 0, sizeof nt_pgate); memset(nt_pnoise, 0, sizeof nt_pnoise); nt_acc = 0; }
+    float dt = dtf > 0.1f ? 0.1f : dtf;
+    if (!g_paused && vs->running) {
+        nt_acc += dt * NT_RATE;
+        for (int n = 0; nt_acc >= 1 && n < 4; n++) { nt_push(vs, ncols); nt_acc -= 1; }
+        if (nt_acc >= 1) nt_acc = 0;
+    }
+    const float x0 = x + 14, cw = (w - 28) / (float)ncols, hy = y + 30, ry0 = hy + 26, rh = 24;
+    for (int k = 0; k < ncols; k++) {                                     /* column heads: a click mutes the voice like on its card */
+        int c = k / 3, v = k % 3, muted = (g_mute >> v) & 1;
+        float hx = x0 + k * cw + 2, hw = cw - 4;
+        int hv = hit(hx, hy, hw, 20);
+        rrect(hx, hy, hw, 20, 6, alpha(muted ? WARN : VC[v], muted ? 0.22f : (hv ? 0.28f : 0.16f)));
+        char lb[24]; if (nsid == 1) snprintf(lb, sizeof lb, "VOICE %d", v + 1); else snprintf(lb, sizeof lb, "SID %d  V%d", c + 1, v + 1);
+        text(hx + (hw - text_width(lb, 11)) / 2, hy + 4, 11, muted ? WARN : alpha(DIM, 1.0f), lb);
+        if (clicked(hx, hy, hw, 20)) { g_mute ^= 1u << v; apply_mute(); click = 0; }
+    }
+    rrect(x + 8, ry0 - 2 + nt_acc * rh, w - 16, rh, 6, alpha(VC[0], 0.10f));                  /* the newest row, moving down with the scroll */
+    const int nvis = (int)((y + h - 10 - ry0) / rh);
+    for (int i = 0; i < nvis && i < NT_ROWS; i++) {
+        float yy = ry0 + ((float)i + nt_acc) * rh, fade = 1.0f - 0.65f * (float)i / (float)(nvis > 1 ? nvis - 1 : 1);
+        if (yy + rh > y + h - 8) break;
+        for (int k = 0; k < ncols; k++) {
+            const nt_cell cc = nt_hist[k][i];
+            int v = k % 3, muted = (g_mute >> v) & 1;
+            float tx = x0 + k * cw + 8, al = (muted ? 0.35f : 1.0f) * fade;
+            char b[16];
+            if (cc.kind == 1) { snprintf(b, sizeof b, "%s%d", NOTE[cc.note % 12], cc.note / 12 - 1); text(tx, yy, 16, alpha(mix(TXT, VC[v], 0.35f), al), b); }
+            else if (cc.kind == 3) text(tx, yy, 16, alpha(VC[v], al), "NOI");
+            else if (cc.kind == 2) text(tx, yy, 16, alpha(WARN, al * 0.85f), "===");
+            else if (cc.kind == 4) text(tx + 4, yy, 16, alpha(VC[v], al * 0.35f), "|");
+            else text(tx, yy, 16, alpha(FAINT, al * 0.5f), "...");
+        }
+    }
+}
+
 static float digi_dmax = 32;
 
 /* The digi display normally shows the $D418 volume-register channel. Tunes that play samples
@@ -1372,7 +1439,7 @@ static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
 }
 
 static int g_portrait, g_plopen;      /* portrait (phones): stacked layout, playlist/browser as overlay */
-static int g_orb;                       /* 1 = orb instead of the voice cards (key V / switch in the filter strip) */
+static int g_orb;                       /* 0 = voice cards, 1 = orb, 2 = notes (key V / switch in the filter strip) */
 static float orb_bs[NBANDS];
 
 /* ================================================================== Orb: geodesic net, deformed by the spectrum
@@ -1908,7 +1975,8 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
         draw_sidebar(M, cy0, aw, sy + sh - cy0);      /* the transport bar below (LIST!) still gets its click */
     } else {
         /* ---------------- voices + digi, or the orb */
-        if (g_orb) draw_orb(M, cy0, aw, midh, (float)dt);
+        if (g_orb == 1) draw_orb(M, cy0, aw, midh, (float)dt);
+        else if (g_orb == 2) draw_notes(M, cy0, aw, midh, vs, (float)dt);
         else {
             float dh = NG_TV ? 52.0f : 64.0f;
             int rows = nsid == 1 && !NG_TV ? 3 : nsid;
@@ -1952,14 +2020,14 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
             cx += chip(cx, cy, "LP", VC[0], (mode & 0x10) != 0);
             cx += chip(cx, cy, "BP", VC[0], (mode & 0x20) != 0);
             cx += chip(cx, cy, "HP", VC[0], (mode & 0x40) != 0);
-            float sw = 70, sx0 = M + aw - 14 - 2 * sw;
-            for (int i = 0; i < 2; i++) {
+            float sw = 62, sx0 = M + aw - 14 - 3 * sw;
+            static const char *const SL[3] = { "VOICES", "NOTES", "ORB" }; static const int SV[3] = { 0, 2, 1 };
+            for (int i = 0; i < 3; i++) {
                 float xx = sx0 + i * sw;
-                int on = (i == 1) == (g_orb != 0), hv = hit(xx, cy - 2, sw - 4, 20);
+                int on = g_orb == SV[i], hv = hit(xx, cy - 2, sw - 4, 20);
                 rrect(xx, cy - 2, sw - 4, 20, 6, on ? alpha(VC[2], 0.25f) : alpha(FAINT, hv ? 0.30f : 0.16f));
-                const char *l = i ? "ORB" : "VOICES";
-                text(xx + (sw - 4 - text_width(l, 11)) / 2, cy + 2, 11, on ? VC[2] : alpha(DIM, 0.9f), l);
-                if (clicked(xx, cy - 2, sw - 4, 20)) { g_orb = i; click = 0; }
+                text(xx + (sw - 4 - text_width(SL[i], 11)) / 2, cy + 2, 11, on ? VC[2] : alpha(DIM, 0.9f), SL[i]);
+                if (clicked(xx, cy - 2, sw - 4, 20)) { g_orb = SV[i]; click = 0; }
             }
         }
         float vuw = 130, spw = aw - vuw - M;
@@ -2297,7 +2365,8 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
 
     /* ---------------- digi channel */
     float dy = vy + vh + M, dh = 96;
-    if (g_orb) draw_orb(ax, vy, aw, dy + dh - vy, (float)dt);
+    if (g_orb == 1) draw_orb(ax, vy, aw, dy + dh - vy, (float)dt);
+    else if (g_orb == 2) draw_notes(ax, vy, aw, dy + dh - vy, vs, (float)dt);
     else draw_digi(ax, dy, aw, dh, vs);
     if (!g_orb && clicked(ax, dy, aw, dh)) { int ds = digi_source(vs); g_mute ^= ds >= 0 ? 1u << ds : 8u; apply_mute(); click = 0; }
 
@@ -2327,14 +2396,14 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
         cx += 50;
         for (int v = 0; v < 3; v++) { snprintf(b, sizeof b, "V%d", v + 1); cx += chip(cx, cy, b, VC[v], (route >> v & 1) != 0); }
         {   /* VOICES | ORB switch (also for touch) */
-            float sw = 70, sx0 = ax + aw - 18 - 150 - 2 * sw;
-            for (int i = 0; i < 2; i++) {
+            float sw = 62, sx0 = ax + aw - 18 - 130 - 3 * sw;
+            static const char *const SL[3] = { "VOICES", "NOTES", "ORB" }; static const int SV[3] = { 0, 2, 1 };
+            for (int i = 0; i < 3; i++) {
                 float xx = sx0 + i * sw;
-                int on = (i == 1) == (g_orb != 0), hv = hit(xx, cy - 2, sw - 4, 20);
+                int on = g_orb == SV[i], hv = hit(xx, cy - 2, sw - 4, 20);
                 rrect(xx, cy - 2, sw - 4, 20, 6, on ? alpha(VC[2], 0.25f) : alpha(FAINT, hv ? 0.30f : 0.16f));
-                const char *l = i ? "ORB" : "VOICES";
-                text(xx + (sw - 4 - text_width(l, 11)) / 2, cy + 2, 11, on ? VC[2] : alpha(DIM, 0.9f), l);
-                if (clicked(xx, cy - 2, sw - 4, 20)) { g_orb = i; click = 0; }
+                text(xx + (sw - 4 - text_width(SL[i], 11)) / 2, cy + 2, 11, on ? VC[2] : alpha(DIM, 0.9f), SL[i]);
+                if (clicked(xx, cy - 2, sw - 4, 20)) { g_orb = SV[i]; click = 0; }
             }
         }
         float rx = ax + aw - 18;
@@ -2721,7 +2790,7 @@ static void iter(void) {
                 case SDLK_RETURN: case SDLK_KP_ENTER: if (browse) browse_activate(br_sel); break;
                 case SDLK_b: if (browse) browse = 0; else browse_open(); fav_mode = 0; break;
                 case SDLK_h: if (cur >= 0 && cur < npl && pl[cur].rel) fav_toggle(pl[cur].rel); break;    /* favorite on / off for the tune that plays */
-                case SDLK_v: g_orb = !g_orb; break;
+                case SDLK_v: g_orb = g_orb == 0 ? 2 : (g_orb == 2 ? 1 : 0); break;      /* voices -> notes -> orb */
                 case SDLK_BACKSPACE: if (browse) browse_up(); break;
                 case SDLK_r: if (cur >= 0) play_index(cur, cur_song); break;
                 case SDLK_1: case SDLK_2: case SDLK_3: case SDLK_4:
@@ -2964,6 +3033,7 @@ int main(int argc, char **argv) {
     fav_load();
     if (getenv("NGSID_TEST_FAV")) fav_mode = 1;                     /* test hook: start with the FAV tab */
     if (getenv("NGSID_TEST_ORB")) g_orb = 1;                        /* test hook: start with the orb instead of the voices */
+    if (getenv("NGSID_TEST_NOTES")) g_orb = 2;                      /* test hook: start with the notes */
     if (getenv("NGSID_TEST_TOGGLE")) fav_toggle(getenv("NGSID_TEST_TOGGLE"));   /* test hook: favorite on / off for this HVSC path at the start */
     if (getenv("NGSID_TEST_CTX") && nfav) { snprintf(ctx_rel, sizeof ctx_rel, "%s", fav[atoi(getenv("NGSID_TEST_CTX")) % nfav].rel); ctx_on = 1; ctx_x = 60; ctx_y = 60; }   /* test hook: the open context menu */
     fav_last_load();

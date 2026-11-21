@@ -2412,7 +2412,10 @@ static void ios_cover_set(int idx) {
                     float w = (dx ? ax : 1 - ax) * (dy ? ay : 1 - ay);
                     if (px < 0 || py < 0 || px >= sw || py >= sh) continue;
                     const unsigned char *q = src + ((size_t)py * sw + px) * 4;
-                    for (int i = 0; i < 4; i++) c[i] += w * (float)q[i];
+                    int qa = q[3];
+                    if (qa < 24) continue;                                        /* the faintest edge pixels are dust: they shone as white dots */
+                    for (int i = 0; i < 3; i++) c[i] += w * (float)(q[i] > qa ? qa : q[i]);      /* premultiplied: the colour cannot be brighter than the alpha */
+                    c[3] += w * (float)qa;
                 }
             }
             float inv = 1.0f - c[3] / 255.0f;

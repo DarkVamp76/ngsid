@@ -1857,7 +1857,7 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
 
     /* ---------------- header */
     float hy = M, hh = g_duo ? 84.0f : 100.0f;
-    const float rpad = g_duo ? 84.0f : 0.0f;                       /* the Duo: time and Wi-Fi of the system lie over the top right corner */
+    const float rpad = g_duo && !NG_TV ? 84.0f : 0.0f;                       /* the Duo: time and Wi-Fi of the system lie over the top right corner */
     card(M, hy, aw, hh, 0);
     {
         char title[160], sub[200];
@@ -1996,7 +1996,7 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
 }
 
 static void draw_duo_bar(float W, float H) {
-#if defined(__APPLE__) && TARGET_OS_IPHONE
+#if defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_TV
     const float M = 10, BH = 64;
     float by = H - M - BH, cy = by + BH / 2, r = 20, fold = W / 2;
     card(M, by, W - 2 * M, BH, 0);
@@ -2054,7 +2054,21 @@ static void draw_duo_bar(float W, float H) {
 #endif
 }
 static void draw_ui_duo(const vis_t *vs, double t, double dt) {
-#if defined(__APPLE__) && TARGET_OS_IPHONE
+#if defined(__APPLE__) && TARGET_OS_TV
+    {   /* Apple TV: the narrow list on the left (the focus never leaves it), the player on the rest of the width and the whole height, no bar below: the remote does everything */
+        const float M = 10;
+        float W = view_w, H = view_h, lw = floorf(W * 0.30f);
+        g_ox = 0;
+        draw_sidebar(M, M, lw - M, H - 2 * M);
+        float mx0 = mx, vw0 = view_w, vh0 = view_h;
+        int cl0 = clickx, rcl0 = rclickx;
+        g_ox = lw; mx -= lw; clickx -= (int)lw; rclickx -= (int)lw;
+        view_w = W - lw; view_h = H + M;                            /* (the phone layout keeps one margin above the end of its height) */
+        draw_ui_portrait(vs, t, dt);
+        g_ox = 0; mx = mx0; clickx = cl0; rclickx = rcl0; view_w = vw0; view_h = vh0;
+        return;
+    }
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
     const float M = 10, BAR = 64;
     float W = view_w, H = view_h, pw = W / 2, Hc = H - BAR - M;     /* the two pages touch (the fold lies between them); the wide bar below them */
     g_ox = 0;

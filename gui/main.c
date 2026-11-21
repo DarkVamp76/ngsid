@@ -1844,7 +1844,7 @@ static void draw_airplay_corner(float cx, float cy, float r) {
 }
 #endif
 static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
-    (void)t;
+
     const float M = 10, BOT = g_duo ? 0.0f : 64.0f, gap = 8;        /* the Duo has the wide bar (draw_duo_bar) */
     float W = view_w, H = view_h, aw = W - 2 * M;
     static const tune_t *last_tune;
@@ -1897,6 +1897,12 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
     /* ---------------- vertical budget */
     float by = H - M - BOT, sh = g_duo ? 88.0f : (H < 720 ? 80 : 96), sy = by - M - sh, fh = 46, fy = sy - M - fh;   /* low windows: flatter spectrum card */
     float cy0 = hy + hh + M, midh = fy - M - cy0;
+    const float tv_side = NG_TV && nsid == 1 ? (aw - 2 * gap) / 3 : 0;   /* Apple TV, one SID: three square voice cards in one row */
+    if (NG_TV) {
+        const float tvdh = 52;                                               /* the digi strip is flatter here, the spectrum gets the room */
+        if (nsid == 1) { sh = by - (cy0 + tv_side + M + tvdh + M + fh + M); sy = by - sh; fy = sy - M - fh; midh = fy - M - cy0; }
+        else { sh = 120; sy = by - sh; fy = sy - M - fh; midh = fy - M - cy0; }
+    }
 
     if (g_plopen) {
         draw_sidebar(M, cy0, aw, sy + sh - cy0);      /* the transport bar below (LIST!) still gets its click */
@@ -1904,16 +1910,23 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
         /* ---------------- voices + digi, or the orb */
         if (g_orb) draw_orb(M, cy0, aw, midh, (float)dt);
         else {
-            float dh = 64;
-            int rows = nsid == 1 ? 3 : nsid;
+            float dh = NG_TV ? 52.0f : 64.0f;
+            int rows = nsid == 1 && !NG_TV ? 3 : nsid;
             float rhv = (midh - dh - M - gap * (float)(rows - 1)) / (float)rows;
             if (rhv < 64) { dh = 46; rhv = (midh - dh - M - gap * (float)(rows - 1)) / (float)rows; }   /* tight: smaller digi card */
-            float rmax = nsid == 1 ? 120.0f : 90.0f;
+            float rmax = NG_TV ? (nsid == 1 ? tv_side : 170.0f) : (nsid == 1 ? 120.0f : 90.0f);
             if (rhv > rmax) rhv = rmax;
             if (rhv < 60) rhv = 60;
+            if (NG_TV && nsid == 1) rhv = tv_side;
             float vw3 = (aw - 2 * gap) / 3;
             for (int c = 0; c < rows; c++) {
-                if (nsid == 1) {
+                if (NG_TV && nsid == 1) {                                     /* three squares in one row: the large voice card */
+                    for (int v = 0; v < 3; v++) {
+                        float vx = M + v * (vw3 + gap);
+                        draw_voice(v, vx, cy0, vw3, rhv, vs, t);
+                        if (clicked(vx, cy0, vw3, rhv)) { g_mute ^= 1u << v; apply_mute(); click = 0; }
+                    }
+                } else if (nsid == 1) {
                     draw_voice_compact(0, c, M, cy0 + (float)c * (rhv + gap), aw, rhv, vs);
                     if (clicked(M, cy0 + (float)c * (rhv + gap), aw, rhv)) { g_mute ^= 1u << c; apply_mute(); click = 0; }
                 } else {

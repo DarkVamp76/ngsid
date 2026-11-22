@@ -257,6 +257,7 @@ void gfx_frame_end(SDL_Window *win) { SDL_GL_SwapWindow(win); }
 float gfx_last_gpu_ms(void) { return 0; }
 void gfx_native_size(SDL_Window *win, int *w, int *h) { gfx_drawable_size(win, w, h); }
 void gfx_set_render_scale(float s) { (void)s; }
+int gfx_refresh_hz(SDL_Window *win) { (void)win; return 60; }
 
 void gfx_read_pixels(int w, int h, unsigned char *rgba) {
     glPixelStorei(GL_PACK_ALIGNMENT, 1);

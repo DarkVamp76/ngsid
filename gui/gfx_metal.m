@@ -112,6 +112,11 @@ void gfx_shutdown(void) { enc = nil; cmd = nil; drawable = nil; }
 #include <SDL2/SDL_syswm.h>
 static float render_scale = 1.0f;
 void gfx_set_render_scale(float sc) { render_scale = sc < 0.25f ? 0.25f : (sc > 1.0f ? 1.0f : sc); }
+int gfx_refresh_hz(SDL_Window *win) {
+    SDL_SysWMinfo info; SDL_VERSION(&info.version);
+    if (SDL_GetWindowWMInfo(win, &info) && info.subsystem == SDL_SYSWM_UIKIT && info.info.uikit.window) { NSInteger r = info.info.uikit.window.screen.maximumFramesPerSecond; if (r >= 24 && r <= 240) return (int)r; }
+    return 60;
+}
 /* Apple TV: the window is 1920 x 1080 points whatever the output; at 4K the screen scale is 2. SDL reports the size of the layer, which this program sets itself every frame,
  * so the native size is computed from the window and the screen. */
 void gfx_native_size(SDL_Window *win, int *w, int *h) {

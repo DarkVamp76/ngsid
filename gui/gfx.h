@@ -31,6 +31,7 @@ void   gfx_set_additive(int on);                      /* blend mode of the follo
 void   gfx_draw(const gfx_vtx *v, int n);             /* n vertices = n/3 triangles */
 void   gfx_frame_end(SDL_Window *win);                /* show the frame */
 void   gfx_native_size(SDL_Window *win, int *w, int *h);   /* the size of the screen in pixels, whatever the picture is rendered at */
+int    gfx_refresh_hz(SDL_Window *win);                 /* refresh rate of the screen (Apple TV: 50, 60 ...); 60 where it is not known */
 void   gfx_set_render_scale(float s);                  /* Apple TV: render at this fraction of the native size (1 = native); elsewhere without effect */
 float  gfx_last_gpu_ms(void);                          /* how long the GPU needed for the last finished frame (Metal; 0 where it is not known) */
 void   gfx_read_pixels(int w, int h, unsigned char *rgba);   /* the frame buffer as RGBA, bottom row first (like glReadPixels) */

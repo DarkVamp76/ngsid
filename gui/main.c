@@ -2128,14 +2128,14 @@ static Uint64 g_draw_t0; static float g_draw_ms;                          /* CPU
 /* Apple TV: locked 60 frames a second by an adaptive render size. The picture is rendered at the native size of the screen (4K when the Apple TV is set to 4K), at 0.75 of it
  * or at 1920 wide, whichever the GPU keeps at 60: the GPU time of the frames is averaged over a second; more than 12 ms steps down at once, less than 8.5 ms (predicted for the next
  * step up from the pixel count) four seconds in a row steps up. Only the GPU decides (when the CPU is the slow one, a smaller picture does not help). Starts at the lowest step. */
-static float tv_fps, tv_slowest, tv_cpu, tv_gpu; static int tv_w, tv_h;       /* the last second, for the counter */
+static float tv_fps, tv_slowest, tv_cpu, tv_gpu; static int tv_w, tv_h, tv_hz;       /* the last second, for the counter */
 static void tv_adapt(SDL_Window *wn, int fw, int fh) {
-    static Uint64 last; static double acc, worst, cpu, gpu; static int n, good, lvl = -1, nlv, fixed; static float lv[3];
+    static Uint64 last; static double acc, worst, cpu, gpu; static int n, good, lvl = -1, nlv, fixed, refresh; static float lv[3];
     if (lvl < 0) {
         int nw = 0, nh = 0; gfx_native_size(wn, &nw, &nh);
         float lo = nw > 1920 ? 1920.0f / (float)nw : 1.0f;
         lv[0] = lo; nlv = 1; if (lo < 1.0f) { lv[1] = (lo + 1.0f) / 2; lv[2] = 1.0f; nlv = 3; }
-        lvl = 0; gfx_set_render_scale(lv[0]);
+        lvl = 0; gfx_set_render_scale(lv[0]); refresh = gfx_refresh_hz(wn);
         const char *fx = getenv("NGSID_TEST_SCALE");                     /* test aid: a fixed render scale (1 = native), no adaptation */
         if (fx) { fixed = 1; gfx_set_render_scale((float)atof(fx)); }
     }
@@ -2146,9 +2146,11 @@ static void tv_adapt(SDL_Window *wn, int fw, int fh) {
         acc += dt; n++; cpu += g_draw_ms; gpu += gfx_last_gpu_ms(); if (dt > worst) worst = dt;
         if (acc >= 1.0) {
             double g = gpu / n; tv_fps = (float)(n / acc); tv_slowest = (float)(worst * 1000.0); tv_cpu = (float)(cpu / n); tv_gpu = (float)g; tv_w = fw; tv_h = fh;
+            refresh = gfx_refresh_hz(wn); tv_hz = refresh;                              /* the screen can be switched while the app runs (50 / 60 Hz) */
+            const double budget = 1000.0 / (double)(refresh > 0 ? refresh : 60);        /* ms a frame may take: one refresh of the screen */
             if (fixed) { /* no adaptation */ }
-            else if (g > 12.0 && lvl > 0) { lvl--; gfx_set_render_scale(lv[lvl]); good = 0; }
-            else if (lvl + 1 < nlv && tv_fps > 58.5f && g * (double)(lv[lvl + 1] / lv[lvl]) * (double)(lv[lvl + 1] / lv[lvl]) < 8.5) { if (++good >= 4) { lvl++; gfx_set_render_scale(lv[lvl]); good = 0; } }
+            else if (g > 0.80 * budget && lvl > 0) { lvl--; gfx_set_render_scale(lv[lvl]); good = 0; }
+            else if (lvl + 1 < nlv && tv_fps > (float)refresh - 1.5f && g * (double)(lv[lvl + 1] / lv[lvl]) * (double)(lv[lvl + 1] / lv[lvl]) < 0.70 * budget) { if (++good >= 4) { lvl++; gfx_set_render_scale(lv[lvl]); good = 0; } }
             else good = 0;
             acc = 0; n = 0; worst = 0; cpu = 0; gpu = 0;
         }
@@ -2161,7 +2163,7 @@ static void draw_fps(float W, float H) {
     if (on < 0) on = getenv("NGSID_TEST_FPS") != NULL || ios_is_testflight();
     if (!on || tv_w <= 0) return;
     char txt[96];
-    snprintf(txt, sizeof txt, "%.0f fps  slowest %.0f ms  cpu %.1f  gpu %.1f  %dx%d", tv_fps, tv_slowest, tv_cpu, tv_gpu, tv_w, tv_h);
+    snprintf(txt, sizeof txt, "%.0f/%d fps  slowest %.0f ms  cpu %.1f  gpu %.1f  %dx%d", tv_fps, tv_hz, tv_slowest, tv_cpu, tv_gpu, tv_w, tv_h);
     text_right(W - 12, H - 13, 10, alpha(DIM, 0.85f), txt);          /* in the free margin below the cards */
 }
 #endif
@@ -3038,7 +3040,15 @@ static void iter(void) {
         gfx_frame_end(win);
 #ifndef __EMSCRIPTEN__
         double spent = (double)(SDL_GetPerformanceCounter() - now) / freq;
+#if defined(__APPLE__) && TARGET_OS_TV
+        {   /* Apple TV: the display paces (the wait for the next drawable). A sleep to the end of the period would push the frames against its beat, so it only goes to 85 percent of the
+             * period: never faster than the screen (where nothing paces, as in the simulator) and the last part is left to the beat of the screen. */
+            double period = 1.0 / (double)(tv_hz > 0 ? tv_hz : 60);
+            if (spent < period * 0.85) SDL_Delay((Uint32)((period * 0.85 - spent) * 1000));
+        }
+#else
         if (spent < 0.012) SDL_Delay((Uint32)((0.0167 - spent) * 1000));   /* in case vsync is unavailable */
+#endif
 #endif
     }
 

@@ -254,6 +254,7 @@ void gfx_draw(const gfx_vtx *v, int n) {
 }
 
 void gfx_frame_end(SDL_Window *win) { SDL_GL_SwapWindow(win); }
+float gfx_last_gpu_ms(void) { return 0; }
 
 void gfx_read_pixels(int w, int h, unsigned char *rgba) {
     glPixelStorei(GL_PACK_ALIGNMENT, 1);

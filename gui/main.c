@@ -2931,6 +2931,12 @@ static void iter(void) {
         {   /* iOS: keep the UI out of the notch / Dynamic Island, the home bar and the rounded corners (insets in points) */
             float il, it, ir, ib;
             if ((!g_duo || NG_TV) && ww > 0 && wh > 0 && !ios_safe_insets(win, &il, &it, &ir, &ib)) {      /* (the Duo uses the whole window, the television keeps its safe area) */
+#if TARGET_OS_TV
+                {   /* Apple TV: the system asks for 90 points at the sides and 60 above and below (a television may cut the edges), which left 81 percent of the picture to the player.
+                     * Modern televisions show every pixel: only a small part of it is kept free. */
+                    if (il > 30) il = 30; if (ir > 30) ir = 30; if (it > 20) it = 20; if (ib > 20) ib = 20;
+                }
+#endif
                 float kx = (float)fdw / ww, ky = (float)fdh / wh;
                 int l = (int)(il * kx), t = (int)(it * ky), r = (int)(ir * kx), b = (int)(ib * ky);
                 if (l + r < fdw / 3 && t + b < fdh / 3) { vpx = l; vpy = b; dw = fdw - l - r; dh = fdh - t - b; }      /* GL counts from below: the bottom inset is the y offset */

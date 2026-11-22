@@ -2125,20 +2125,44 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
 
 static Uint64 g_draw_t0; static float g_draw_ms;                          /* CPU time of the frame (building the picture), shown by draw_fps */
 #if defined(__APPLE__) && TARGET_OS_TV
-/* Apple TV, TestFlight builds only (or NGSID_TEST_FPS=1): the frame rate and the slowest frame of the last second, with the size the picture is rendered at. */
-static void draw_fps(float W, float H, int fw, int fh) {
-    static int on = -1;
-    if (on < 0) on = getenv("NGSID_TEST_FPS") != NULL || ios_is_testflight();
-    if (!on) return;
-    static Uint64 last; static double acc, worst, cpu, gpu; static int n; static char txt[96] = "";
+/* Apple TV: locked 60 frames a second by an adaptive render size. The picture is rendered at the native size of the screen (4K when the Apple TV is set to 4K), at 0.75 of it
+ * or at 1920 wide, whichever the GPU keeps at 60: the GPU time of the frames is averaged over a second; more than 12 ms steps down at once, less than 8.5 ms (predicted for the next
+ * step up from the pixel count) four seconds in a row steps up. Only the GPU decides (when the CPU is the slow one, a smaller picture does not help). Starts at the lowest step. */
+static float tv_fps, tv_slowest, tv_cpu, tv_gpu; static int tv_w, tv_h;       /* the last second, for the counter */
+static void tv_adapt(SDL_Window *wn, int fw, int fh) {
+    static Uint64 last; static double acc, worst, cpu, gpu; static int n, good, lvl = -1, nlv, fixed; static float lv[3];
+    if (lvl < 0) {
+        int nw = 0, nh = 0; gfx_native_size(wn, &nw, &nh);
+        float lo = nw > 1920 ? 1920.0f / (float)nw : 1.0f;
+        lv[0] = lo; nlv = 1; if (lo < 1.0f) { lv[1] = (lo + 1.0f) / 2; lv[2] = 1.0f; nlv = 3; }
+        lvl = 0; gfx_set_render_scale(lv[0]);
+        const char *fx = getenv("NGSID_TEST_SCALE");                     /* test aid: a fixed render scale (1 = native), no adaptation */
+        if (fx) { fixed = 1; gfx_set_render_scale((float)atof(fx)); }
+    }
+    (void)fh;
     Uint64 t = SDL_GetPerformanceCounter();
     if (last) {
         double dt = (double)(t - last) / (double)SDL_GetPerformanceFrequency();
         acc += dt; n++; cpu += g_draw_ms; gpu += gfx_last_gpu_ms(); if (dt > worst) worst = dt;
-        if (acc >= 1.0) { snprintf(txt, sizeof txt, "%.0f fps  slowest %.0f ms  cpu %.1f  gpu %.1f  %dx%d", (double)n / acc, worst * 1000.0, cpu / n, gpu / n, fw, fh); acc = 0; n = 0; worst = 0; cpu = 0; gpu = 0; }
+        if (acc >= 1.0) {
+            double g = gpu / n; tv_fps = (float)(n / acc); tv_slowest = (float)(worst * 1000.0); tv_cpu = (float)(cpu / n); tv_gpu = (float)g; tv_w = fw; tv_h = fh;
+            if (fixed) { /* no adaptation */ }
+            else if (g > 12.0 && lvl > 0) { lvl--; gfx_set_render_scale(lv[lvl]); good = 0; }
+            else if (lvl + 1 < nlv && tv_fps > 58.5f && g * (double)(lv[lvl + 1] / lv[lvl]) * (double)(lv[lvl + 1] / lv[lvl]) < 8.5) { if (++good >= 4) { lvl++; gfx_set_render_scale(lv[lvl]); good = 0; } }
+            else good = 0;
+            acc = 0; n = 0; worst = 0; cpu = 0; gpu = 0;
+        }
     }
     last = t;
-    if (txt[0]) text_right(W - 12, H - 13, 10, alpha(DIM, 0.85f), txt);          /* in the free margin below the cards */
+}
+/* the counter: TestFlight builds only (or NGSID_TEST_FPS=1): frame rate, slowest frame, CPU and GPU time of a frame, render size */
+static void draw_fps(float W, float H) {
+    static int on = -1;
+    if (on < 0) on = getenv("NGSID_TEST_FPS") != NULL || ios_is_testflight();
+    if (!on || tv_w <= 0) return;
+    char txt[96];
+    snprintf(txt, sizeof txt, "%.0f fps  slowest %.0f ms  cpu %.1f  gpu %.1f  %dx%d", tv_fps, tv_slowest, tv_cpu, tv_gpu, tv_w, tv_h);
+    text_right(W - 12, H - 13, 10, alpha(DIM, 0.85f), txt);          /* in the free margin below the cards */
 }
 #endif
 static void draw_duo_bar(float W, float H) {
@@ -2212,7 +2236,7 @@ static void draw_ui_duo(const vis_t *vs, double t, double dt) {
         view_w = W - lw; view_h = H + M;                            /* (the phone layout keeps one margin above the end of its height) */
         draw_ui_portrait(vs, t, dt);
         g_ox = 0; mx = mx0; clickx = cl0; rclickx = rcl0; view_w = vw0; view_h = vh0;
-        draw_fps(W, H, (int)(W * view_scale + 0.5f), (int)(H * view_scale + 0.5f));
+        draw_fps(W, H);
         return;
     }
 #elif defined(__APPLE__) && TARGET_OS_IPHONE
@@ -3008,6 +3032,9 @@ static void iter(void) {
         }
 #endif
         g_draw_ms = (float)((double)(SDL_GetPerformanceCounter() - g_draw_t0) * 1000.0 / (double)SDL_GetPerformanceFrequency());
+#if defined(__APPLE__) && TARGET_OS_TV
+        tv_adapt(win, fdw, fdh);
+#endif
         gfx_frame_end(win);
 #ifndef __EMSCRIPTEN__
         double spent = (double)(SDL_GetPerformanceCounter() - now) / freq;

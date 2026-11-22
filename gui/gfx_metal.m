@@ -108,7 +108,14 @@ int gfx_init(SDL_Window *win, int max_vtx) {
 
 void gfx_shutdown(void) { enc = nil; cmd = nil; drawable = nil; }
 
-void gfx_drawable_size(SDL_Window *win, int *w, int *h) { SDL_Metal_GetDrawableSize(win, w, h); }
+void gfx_drawable_size(SDL_Window *win, int *w, int *h) {
+    SDL_Metal_GetDrawableSize(win, w, h);
+#if TARGET_OS_TV
+    /* Apple TV: a 4K television would make this 3840 x 2160, four times the pixels of 1080p; the glow and the cards are fill-rate heavy and 60 frames a second
+     * are worth more than the sharpness. Render at 1920 x 1080 at most, the layer scales the picture to the screen. */
+    if (*w > 1920) { float k = 1920.0f / (float)*w; *w = 1920; *h = (int)((float)*h * k + 0.5f); }
+#endif
+}
 
 gfx_tex *gfx_tex_create(int w, int h, int channels, const void *px) {
     @autoreleasepool {
@@ -170,13 +177,16 @@ void gfx_draw(const gfx_vtx *v, int n) {
     voff += bytes;
 }
 
+static volatile float last_gpu_ms;
+float gfx_last_gpu_ms(void) { return last_gpu_ms; }
+
 static void commit_frame(void) {
     if (committed) return;
     committed = 1;
     [enc endEncoding];
     [cmd presentDrawable:drawable];
     dispatch_semaphore_t s = inflight;
-    [cmd addCompletedHandler:^(id<MTLCommandBuffer> c) { (void)c; dispatch_semaphore_signal(s); }];
+    [cmd addCompletedHandler:^(id<MTLCommandBuffer> c) { last_gpu_ms = (float)((c.GPUEndTime - c.GPUStartTime) * 1000.0); dispatch_semaphore_signal(s); }];
     [cmd commit];
 }
 

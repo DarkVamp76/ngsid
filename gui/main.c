@@ -57,6 +57,7 @@ void ios_media_update(const char *title, const char *artist, const char *album, 
 int ios_media_poll(void);                                                         /* a remote command: 0 play, 1 pause, 2 next, 3 previous, -1 none */
 int ios_hinge_status(SDL_Window *win);                                       /* ios_glue.m: -1 no hinge (iPhone, iPad), 1 closed, 2 partly open, 3 open (iPhone Duo) */
 int ios_launched_in_background(void);                                         /* ios_glue.m: started by the system in the background (CarPlay / lock screen play command): do not play by itself */
+int ios_is_testflight(void);                                                   /* ios_glue.m: a TestFlight build (not the App Store): the frame rate is shown */
 int ios_app_active(void);                                                        /* ios_glue.m: the app is in the foreground */
 void ios_media_set_cover(const unsigned char *px, int w, int h);                 /* the cover for the lock screen: RGBA, opaque, top row first; NULL = none */
 void ios_audio_longform(void);                                                    /* AirPlay 2 (HomePod) needs the long-form route sharing policy */
@@ -2122,6 +2123,24 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
     }
 }
 
+static Uint64 g_draw_t0; static float g_draw_ms;                          /* CPU time of the frame (building the picture), shown by draw_fps */
+#if defined(__APPLE__) && TARGET_OS_TV
+/* Apple TV, TestFlight builds only (or NGSID_TEST_FPS=1): the frame rate and the slowest frame of the last second, with the size the picture is rendered at. */
+static void draw_fps(float W, float H, int fw, int fh) {
+    static int on = -1;
+    if (on < 0) on = getenv("NGSID_TEST_FPS") != NULL || ios_is_testflight();
+    if (!on) return;
+    static Uint64 last; static double acc, worst, cpu, gpu; static int n; static char txt[96] = "";
+    Uint64 t = SDL_GetPerformanceCounter();
+    if (last) {
+        double dt = (double)(t - last) / (double)SDL_GetPerformanceFrequency();
+        acc += dt; n++; cpu += g_draw_ms; gpu += gfx_last_gpu_ms(); if (dt > worst) worst = dt;
+        if (acc >= 1.0) { snprintf(txt, sizeof txt, "%.0f fps  slowest %.0f ms  cpu %.1f  gpu %.1f  %dx%d", (double)n / acc, worst * 1000.0, cpu / n, gpu / n, fw, fh); acc = 0; n = 0; worst = 0; cpu = 0; gpu = 0; }
+    }
+    last = t;
+    if (txt[0]) text_right(W - 12, H - 13, 10, alpha(DIM, 0.85f), txt);          /* in the free margin below the cards */
+}
+#endif
 static void draw_duo_bar(float W, float H) {
 #if defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_TV
     const float M = 10, BH = 64;
@@ -2193,6 +2212,7 @@ static void draw_ui_duo(const vis_t *vs, double t, double dt) {
         view_w = W - lw; view_h = H + M;                            /* (the phone layout keeps one margin above the end of its height) */
         draw_ui_portrait(vs, t, dt);
         g_ox = 0; mx = mx0; clickx = cl0; rclickx = rcl0; view_w = vw0; view_h = vh0;
+        draw_fps(W, H, (int)(W * view_scale + 0.5f), (int)(H * view_scale + 0.5f));
         return;
     }
 #elif defined(__APPLE__) && TARGET_OS_IPHONE
@@ -2968,6 +2988,7 @@ static void iter(void) {
         analyse(&snap, (float)dt);
 
         gfx_frame_begin(fdw, fdh, vpx, vpy, dw, dh, BG0.r, BG0.g, BG0.b);
+        g_draw_t0 = SDL_GetPerformanceCounter();                       /* after the wait for the display: what follows is the time this program needs for the frame */
         gfx_set_params(view_w, view_h, view_scale);
         gfx_set_texture(fonttex);
         draw_ui(&snap, (double)(now - t0) / freq, dt);
@@ -2986,6 +3007,7 @@ static void iter(void) {
             g_ap_seen = 0;
         }
 #endif
+        g_draw_ms = (float)((double)(SDL_GetPerformanceCounter() - g_draw_t0) * 1000.0 / (double)SDL_GetPerformanceFrequency());
         gfx_frame_end(win);
 #ifndef __EMSCRIPTEN__
         double spent = (double)(SDL_GetPerformanceCounter() - now) / freq;

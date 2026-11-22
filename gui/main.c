@@ -2164,7 +2164,12 @@ static void tv_adapt(SDL_Window *wn, int fw, int fh) {
 /* the counter: TestFlight builds only (or NGSID_TEST_FPS=1): frame rate, slowest frame, CPU and GPU time of a frame, render size */
 static void draw_fps(float W, float H) {
     static int on = -1;
-    if (on < 0) on = getenv("NGSID_TEST_FPS") != NULL || ios_is_testflight();
+    if (on < 0) {
+        on = 0;
+#ifdef NG_FPS_COUNTER                                                      /* compiled in only for TestFlight test builds (FPS=1 for tvos/scripts/archive.sh): a build for the App Store has no counter at all */
+        on = getenv("NGSID_TEST_FPS") != NULL || ios_is_testflight();
+#endif
+    }
     if (!on || tv_w <= 0) return;
     char txt[96];
     snprintf(txt, sizeof txt, "%.0f/%d fps  slowest %.0f ms  cpu %.1f  gpu %.1f  %dx%d", tv_fps, tv_hz, tv_slowest, tv_cpu, tv_gpu, tv_w, tv_h);

@@ -2236,7 +2236,7 @@ static void draw_ui_duo(const vis_t *vs, double t, double dt) {
         const float M = 10;
         const float W = view_w, H = view_h, aw = W - g_tvi_l - g_tvi_r, ah = H - g_tvi_t - g_tvi_b, lw = floorf(aw * 0.30f);
         g_ox = g_tvi_l; g_oy = g_tvi_t;
-        draw_sidebar(M, M, lw - M, ah - 2 * M);
+        draw_sidebar(M, M, lw - M, ah - M);
         float mx0 = mx, vw0 = view_w, vh0 = view_h;
         int cl0 = clickx, rcl0 = rclickx;
         g_ox = g_tvi_l + lw; mx -= lw; clickx -= (int)lw; rclickx -= (int)lw;

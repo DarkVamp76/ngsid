@@ -110,16 +110,20 @@ static void set_additive(int on) {
 }
 
 static int g_duo;                      /* iPhone Duo opened: two pages, the list on the left, the player on the right, one wide bar below */
-static float g_ox;                     /* the right page is drawn with this offset in x (the left one at 0); elsewhere it stays 0 */
+static float g_ox, g_oy;               /* the right page is drawn with this offset in x (the left one at 0); Apple TV: everything is moved by the free margin; elsewhere they stay 0 */
+static int tv_inset_px[4];                         /* Apple TV: the free margin in pixels (left, top, right, bottom) */
+static float g_tvi_l, g_tvi_t, g_tvi_r, g_tvi_b;   /* Apple TV: the free margin in view units (the background goes to the edge, the cards keep this distance) */
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 #define GFX_OX g_ox
+#define GFX_OY g_oy
 #else
 #define GFX_OX 0.0f
+#define GFX_OY 0.0f
 #endif
 static void V(float x, float y, float u, float v, col c, float m, float p1, float p2, float p3) {
     if (nv >= MAXV) flush();
     vtx *t = &vb[nv++];
-    t->x = x + GFX_OX; t->y = y; t->u = u; t->v = v;
+    t->x = x + GFX_OX; t->y = y + GFX_OY; t->u = u; t->v = v;
     t->r = c.r; t->g = c.g; t->b = c.b; t->a = c.a;
     t->m = m; t->p1 = p1; t->p2 = p2; t->p3 = p3;
 }
@@ -2227,17 +2231,18 @@ static void draw_duo_bar(float W, float H) {
 }
 static void draw_ui_duo(const vis_t *vs, double t, double dt) {
 #if defined(__APPLE__) && TARGET_OS_TV
-    {   /* Apple TV: the narrow list on the left (the focus never leaves it), the player on the rest of the width and the whole height, no bar below: the remote does everything */
+    {   /* Apple TV: the narrow list on the left (the focus never leaves it), the player on the rest of the width and the whole height, no bar below: the remote does everything.
+         * The background fills the whole screen (the viewport is the screen); the cards keep the small free margin (g_tvi_*), everything is drawn moved by it. */
         const float M = 10;
-        float W = view_w, H = view_h, lw = floorf(W * 0.30f);
-        g_ox = 0;
-        draw_sidebar(M, M, lw - M, H - 2 * M);
+        const float W = view_w, H = view_h, aw = W - g_tvi_l - g_tvi_r, ah = H - g_tvi_t - g_tvi_b, lw = floorf(aw * 0.30f);
+        g_ox = g_tvi_l; g_oy = g_tvi_t;
+        draw_sidebar(M, M, lw - M, ah - 2 * M);
         float mx0 = mx, vw0 = view_w, vh0 = view_h;
         int cl0 = clickx, rcl0 = rclickx;
-        g_ox = lw; mx -= lw; clickx -= (int)lw; rclickx -= (int)lw;
-        view_w = W - lw; view_h = H + M;                            /* (the phone layout keeps one margin above the end of its height) */
+        g_ox = g_tvi_l + lw; mx -= lw; clickx -= (int)lw; rclickx -= (int)lw;
+        view_w = aw - lw; view_h = ah + M;                          /* (the phone layout keeps one margin above the end of its height) */
         draw_ui_portrait(vs, t, dt);
-        g_ox = 0; mx = mx0; clickx = cl0; rclickx = rcl0; view_w = vw0; view_h = vh0;
+        g_ox = 0; g_oy = 0; mx = mx0; clickx = cl0; rclickx = rcl0; view_w = vw0; view_h = vh0;
         draw_fps(W, H);
         return;
     }
@@ -2939,7 +2944,11 @@ static void iter(void) {
 #endif
                 float kx = (float)fdw / ww, ky = (float)fdh / wh;
                 int l = (int)(il * kx), t = (int)(it * ky), r = (int)(ir * kx), b = (int)(ib * ky);
+#if TARGET_OS_TV
+                tv_inset_px[0] = l; tv_inset_px[1] = t; tv_inset_px[2] = r; tv_inset_px[3] = b;      /* the picture (background) keeps the whole screen, only the cards keep this distance */
+#else
                 if (l + r < fdw / 3 && t + b < fdh / 3) { vpx = l; vpy = b; dw = fdw - l - r; dh = fdh - t - b; }      /* GL counts from below: the bottom inset is the y offset */
+#endif
             }
         }
 #endif
@@ -2961,6 +2970,9 @@ static void iter(void) {
         }
         view_w = (float)dw / view_scale;
         view_h = (float)dh / view_scale;
+#if defined(__APPLE__) && TARGET_OS_TV
+        g_tvi_l = (float)tv_inset_px[0] / view_scale; g_tvi_t = (float)tv_inset_px[1] / view_scale; g_tvi_r = (float)tv_inset_px[2] / view_scale; g_tvi_b = (float)tv_inset_px[3] / view_scale;
+#endif
         int mxi, myi;
         Uint32 mb = SDL_GetMouseState(&mxi, &myi);
         mouse_down = (mb & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;

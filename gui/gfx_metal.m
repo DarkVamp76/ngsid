@@ -108,14 +108,29 @@ int gfx_init(SDL_Window *win, int max_vtx) {
 
 void gfx_shutdown(void) { enc = nil; cmd = nil; drawable = nil; }
 
-void gfx_drawable_size(SDL_Window *win, int *w, int *h) {
-    SDL_Metal_GetDrawableSize(win, w, h);
 #if TARGET_OS_TV
-    /* Apple TV: a 4K television would make this 3840 x 2160, four times the pixels of 1080p; the glow and the cards are fill-rate heavy and 60 frames a second
-     * are worth more than the sharpness. Render at 1920 x 1080 at most, the layer scales the picture to the screen. */
-    if (*w > 1920) { float k = 1920.0f / (float)*w; *w = 1920; *h = (int)((float)*h * k + 0.5f); }
-#endif
+#include <SDL2/SDL_syswm.h>
+static float render_scale = 1.0f;
+void gfx_set_render_scale(float sc) { render_scale = sc < 0.25f ? 0.25f : (sc > 1.0f ? 1.0f : sc); }
+/* Apple TV: the window is 1920 x 1080 points whatever the output; at 4K the screen scale is 2. SDL reports the size of the layer, which this program sets itself every frame,
+ * so the native size is computed from the window and the screen. */
+void gfx_native_size(SDL_Window *win, int *w, int *h) {
+    int pw = 0, ph = 0; SDL_GetWindowSize(win, &pw, &ph);
+    float ns = 1;
+    SDL_SysWMinfo info; SDL_VERSION(&info.version);
+    if (SDL_GetWindowWMInfo(win, &info) && info.subsystem == SDL_SYSWM_UIKIT && info.info.uikit.window) ns = (float)info.info.uikit.window.screen.nativeScale;
+    if (ns < 1) ns = 1;
+    *w = (int)((float)pw * ns + 0.5f); *h = (int)((float)ph * ns + 0.5f);
 }
+void gfx_drawable_size(SDL_Window *win, int *w, int *h) {
+    gfx_native_size(win, w, h);
+    *w = ((int)((float)*w * render_scale + 0.5f)) & ~1; *h = ((int)((float)*h * render_scale + 0.5f)) & ~1;     /* even sizes */
+}
+#else
+void gfx_drawable_size(SDL_Window *win, int *w, int *h) { SDL_Metal_GetDrawableSize(win, w, h); }
+void gfx_native_size(SDL_Window *win, int *w, int *h) { SDL_Metal_GetDrawableSize(win, w, h); }
+void gfx_set_render_scale(float sc) { (void)sc; }
+#endif
 
 gfx_tex *gfx_tex_create(int w, int h, int channels, const void *px) {
     @autoreleasepool {

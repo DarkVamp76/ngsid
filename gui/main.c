@@ -2851,6 +2851,7 @@ static int url_hvsc_path(const char *u, char *out, size_t cap) {
 #endif
 static void iter(void) {
 #if defined(__APPLE__) && TARGET_OS_TV
+    SDL_SetHint(SDL_HINT_APPLE_TV_CONTROLLER_UI_EVENTS, "1");      /* without it the root view controller does not hand the Menu press to the system */
     SDL_SetHint("NG_TV_MENU_TO_SYSTEM", browse && !br_at_root() ? "0" : "1");      /* the Menu button: one level up in the browser, otherwise to the Apple TV home screen (patched SDL; no black screen) */
 #endif
         SDL_Event e;

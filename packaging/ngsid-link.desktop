@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ngSid (links)
+Comment=Opens ngsid:// links (the Open in ngSid button of the web player)
+Exec=ngSid %u
+Icon=ngsid
+Terminal=false
+NoDisplay=true
+Categories=AudioVideo;Audio;Player;
+MimeType=x-scheme-handler/ngsid;

@@ -88,6 +88,7 @@ ngSid: $(GUIOBJ) $(PSIDINFO) $(SYNTH) $(LSPOBJ) $(LSP_LIB)
 install: ngSid
 	install -Dm755 ngSid $(DESTDIR)$(PREFIX)/bin/ngSid
 	install -Dm644 packaging/ngsid.desktop $(DESTDIR)$(PREFIX)/share/applications/ngsid.desktop
+	install -Dm644 packaging/ngsid-link.desktop $(DESTDIR)$(PREFIX)/share/applications/ngsid-link.desktop
 	install -Dm644 packaging/ngsid.svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/ngsid.svg
 	for n in 32 48 64 128 256 512; do \
 		install -Dm644 packaging/icons/ngsid-$$n.png $(DESTDIR)$(PREFIX)/share/icons/hicolor/$${n}x$${n}/apps/ngsid.png; \
@@ -135,7 +136,7 @@ $(WEB_LSP_LIB): $(LSP_TAR)
 web-deps: $(WEB_LSP_LIB)
 
 web: $(WEB_LSP_LIB) $(OBJ_DIR)/version.h
-	$(MAKE) -f $(NGWEB)/ngweb.mk APPDIR=$(CURDIR) NAME=ngSid WEB_COUNT=1 WEB_MA=0 WEB_HVSC=1 WEB_HEADIMG=assets/c64-header.png WEB_HEADLINK=https://commodore.net/computer/ WEB_EXPORTS=_main,_ng_web_add,_ng_web_hvsc,_ng_web_size \
+	$(MAKE) -f $(NGWEB)/ngweb.mk APPDIR=$(CURDIR) NAME=ngSid WEB_NATIVE=ngsid WEB_COUNT=1 WEB_MA=0 WEB_HVSC=1 WEB_HEADIMG=assets/c64-header.png WEB_HEADLINK=https://commodore.net/computer/ WEB_EXPORTS=_main,_ng_web_add,_ng_web_hvsc,_ng_web_size \
 		HINT="Drop SID files here" \
 		WEB_INC="-I. -Igui -Ilsp -Ibuild $(WEB_LSP_INC)" \
 		WEB_EXTRA="-fexceptions -sDEFAULT_TO_CXX" WEB_LIBS="$(WEB_LSP_LIB)" SRC="$(WEB_SRC)"

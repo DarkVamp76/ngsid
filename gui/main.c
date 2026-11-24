@@ -46,6 +46,13 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#if !defined(__EMSCRIPTEN__) && !defined(__APPLE__)
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 
 static int g_launch_bg;                    /* iOS: the app was started in the background: no tune starts by itself until it comes to the foreground or gets a play command */
@@ -2885,10 +2892,10 @@ static void mac_media_sync(void) {
 }
 #endif
 
-#if defined(__APPLE__) && TARGET_OS_IPHONE
+#ifndef __EMSCRIPTEN__
 /* The HVSC path in a link of ours: .../player/#/MUSICIANS/K/KB/Katakis_Remix.sid, .../t/MUSICIANS/... or ngsid://MUSICIANS/... (decoded, no leading slash). A path ending in
  * "/" is a folder. The numeric form .../player/#97064 (database id of the HVSC) is only resolved by the web build. 0 = not a link of ours. */
-static int url_hvsc_path(const char *u, char *out, size_t cap) {
+__attribute__((unused)) static int url_hvsc_path(const char *u, char *out, size_t cap) {
     if (!u || (strncmp(u, "ngsid:", 6) && !(!strncmp(u, "http", 4) && strstr(u, "://ngsid.org/")))) return 0;       /* only the links of our own site and scheme */
     const char *p = NULL;
     if (!strncmp(u, "ngsid://", 8)) p = u + 8;
@@ -2906,8 +2913,54 @@ static int url_hvsc_path(const char *u, char *out, size_t cap) {
     return 1;
 }
 #endif
+#if !defined(__EMSCRIPTEN__) && !defined(__APPLE__)
+/* ---- One ngSid for links: the "Open in ngSid" button of the web player opens ngsid://MUSICIANS/..., a running player takes the link over its socket (LINK <path>) ---- */
+static char g_link[768];                                             /* an HVSC path from a link, waiting for the main loop (a path ending in / is a folder) */
+static int ipc_fd = -1; static char ipc_path[sizeof(((struct sockaddr_un *)0)->sun_path)];
+static void ipc_sockpath(void) {
+    const char *r = getenv("XDG_RUNTIME_DIR"), *o = getenv("NGSID_SOCKET");
+    if (o && *o) snprintf(ipc_path, sizeof ipc_path, "%s", o);
+    else if (r && *r) snprintf(ipc_path, sizeof ipc_path, "%s/ngsid.sock", r); else snprintf(ipc_path, sizeof ipc_path, "/tmp/ngsid-%u.sock", (unsigned)getuid());
+}
+static int ipc_send_link(const char *path) {                          /* 1 = a running ngSid took the link */
+    ipc_sockpath();
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0); if (fd < 0) return 0;
+    struct sockaddr_un a; memset(&a, 0, sizeof a); a.sun_family = AF_UNIX; snprintf(a.sun_path, sizeof a.sun_path, "%s", ipc_path);
+    if (connect(fd, (struct sockaddr *)&a, sizeof a)) { close(fd); return 0; }
+    char msg[900]; int n = snprintf(msg, sizeof msg, "LINK %s\n", path); int ok = write(fd, msg, (size_t)n) == n; close(fd); return ok;
+}
+static void ipc_listen(void) {
+    ipc_sockpath(); unlink(ipc_path);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0); if (fd < 0) return;
+    struct sockaddr_un a; memset(&a, 0, sizeof a); a.sun_family = AF_UNIX; snprintf(a.sun_path, sizeof a.sun_path, "%s", ipc_path);
+    if (bind(fd, (struct sockaddr *)&a, sizeof a) || listen(fd, 8)) { close(fd); return; }
+    chmod(ipc_path, 0600); fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); ipc_fd = fd;
+}
+static void ipc_close(void) { if (ipc_fd >= 0) { close(ipc_fd); ipc_fd = -1; unlink(ipc_path); } }
+static void ipc_poll(void) {
+    if (ipc_fd < 0) return;
+    for (int k = 0; k < 4; k++) {
+        int c = accept(ipc_fd, NULL, NULL); if (c < 0) return;
+        char buf[1024]; size_t n = 0; struct pollfd p = { c, POLLIN, 0 };
+        while (n < sizeof buf - 1 && poll(&p, 1, 100) > 0) { ssize_t r = read(c, buf + n, sizeof buf - 1 - n); if (r <= 0) break; n += (size_t)r; }
+        close(c); buf[n] = 0;
+        for (char *line = strtok(buf, "\n"); line; line = strtok(NULL, "\n"))
+            if (!strncmp(line, "LINK ", 5)) { const char *lg = getenv("NGSID_IPC_LOG"); if (lg) { FILE *f = fopen(lg, "a"); if (f) { fprintf(f, "LINK %s\n", line + 5); fclose(f); } } snprintf(g_link, sizeof g_link, "%s", line + 5); }
+        if (win) { SDL_RestoreWindow(win); SDL_RaiseWindow(win); }
+    }
+}
+static void link_play(const char *hp) {                              /* a tune plays, a folder opens in the browser */
+    size_t hl = strlen(hp);
+    if (hl && hp[hl - 1] == '/') { browse = 1; fav_mode = 0; g_plopen = 1; job_start(0, hp); }
+    else job_start(1, hp);
+}
+#endif
 static Uint32 *tv_menu_note;        /* Apple TV: the time of the last Menu press (see iter) */
 static void iter(void) {
+#if !defined(__EMSCRIPTEN__) && !defined(__APPLE__)
+    ipc_poll();
+    if (g_link[0]) { char hp[768]; snprintf(hp, sizeof hp, "%s", g_link); g_link[0] = 0; link_play(hp); }
+#endif
 #if defined(__APPLE__) && TARGET_OS_TV
     {   /* The system takes the Menu button over completely while "controller UI events" are on (the press goes Home whatever the app does with it): they are on only where Menu should
          * leave (top of the browser; not in the favorites list, not with the menu open); there the app gets the press as Escape (one level up / close). Not switched while a press is on its way. */
@@ -3222,11 +3275,17 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             printf("usage: %s [--pal|--ntsc] [--6581|--8580] [--rate N] [-s song]\n"
                    "       [--no-update-check] [--version]\n"
-                   "       [--screenshot out.bmp [--frames N]] [file.sid|dir ...]\n", argv[0]);
+                   "       [--screenshot out.bmp [--frames N]] [file.sid|dir|ngsid://PATH ...]\n", argv[0]);
             return 0;
         } else if (argv[i][0] == '-' && argv[i][1]) { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
+#if !defined(__EMSCRIPTEN__) && !defined(__APPLE__)
+        else if (url_hvsc_path(argv[i], g_link, sizeof g_link)) { if (!shot && ipc_send_link(g_link)) return 0; }        /* a link (ngsid://MUSICIANS/..., https://ngsid.org/player/#/MUSICIANS/...): a running ngSid plays it; else this one does */
+#endif
         else add_path(argv[i], 0);
     }
+#if !defined(__EMSCRIPTEN__) && !defined(__APPLE__)
+    if (!shot) ipc_listen();
+#endif
 
     /* desktop integration: the Wayland app id must match ngsid.desktop (KDE takes the icon from it),
      * the X11 class matches StartupWMClass; unknown hints are ignored by older SDL versions */
@@ -3342,6 +3401,9 @@ int main(int argc, char **argv) {
     if (g_dev) { SDL_CloseAudioDevice(g_dev); }
     tune_free(g_tune);
     gfx_shutdown();
+#if !defined(__EMSCRIPTEN__) && !defined(__APPLE__)
+    ipc_close();
+#endif
     SDL_DestroyWindow(win);
     SDL_Quit();
     return 0;

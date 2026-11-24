@@ -2849,9 +2849,15 @@ static int url_hvsc_path(const char *u, char *out, size_t cap) {
     return 1;
 }
 #endif
+static Uint32 *tv_menu_note;        /* Apple TV: the time of the last Menu press (see iter) */
 static void iter(void) {
 #if defined(__APPLE__) && TARGET_OS_TV
-    SDL_SetHint(SDL_HINT_APPLE_TV_CONTROLLER_UI_EVENTS, "1");      /* without it the root view controller does not hand the Menu press to the system */
+    {   /* The system takes the Menu button over completely while "controller UI events" are on (the press goes Home whatever the app does with it): they are on at the top
+         * of the browser and in the playlist only; deeper in the tree the app gets the press as Escape and goes one level up. Not switched while a press is on its way. */
+        static Uint32 menu_t;
+        if (SDL_GetTicks() - menu_t > 600) SDL_SetHint(SDL_HINT_APPLE_TV_CONTROLLER_UI_EVENTS, browse && !br_at_root() ? "0" : "1");
+        tv_menu_note = &menu_t;
+    }
     SDL_SetHint("NG_TV_MENU_TO_SYSTEM", browse && !br_at_root() ? "0" : "1");      /* the Menu button: one level up in the browser, otherwise to the Apple TV home screen (patched SDL; no black screen) */
 #endif
         SDL_Event e;
@@ -2894,7 +2900,7 @@ static void iter(void) {
             }
             case SDL_KEYDOWN:
                 switch (e.key.keysym.sym) {
-                case SDLK_ESCAPE: if (NG_TV && browse && !br_at_root()) browse_up(); else running = 0; break;      /* Apple TV: the Menu button goes one level up, at the top it leaves */
+                case SDLK_ESCAPE: if (tv_menu_note) *tv_menu_note = SDL_GetTicks(); if (NG_TV && browse && !br_at_root()) browse_up(); else running = 0; break;      /* Apple TV: the Menu button goes one level up, at the top it leaves */
                 case SDLK_SPACE: g_paused = !g_paused; break;
                 case SDLK_PAUSE:
 #if defined(__APPLE__) && TARGET_OS_TV

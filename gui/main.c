@@ -1621,7 +1621,7 @@ static int sb_pd, sb_moved, sb_tap, sb_pressed;
 static int ctx_swallow;                                  /* a tap that hit the context menu (or closed it) must not select the row below when the finger lifts */
 static int lp_on, lp_fired, lp_swallow, lp_x, lp_y;     /* long press on a touch screen = right click */
 static Uint32 lp_t;
-static float sb_py0, sb_sc0;
+static float sb_py0, sb_px0, sb_sc0;
 static int sb_click(float x, float y, float w, float h) {
     if (!g_portrait && !g_mobile) return clicked(x, y, w, h);
     return sb_tap && mx >= x && mx < x + w && my >= y && my < y + h;
@@ -1704,9 +1704,14 @@ static void draw_sidebar(float x, float y, float w, float h) {
     const int touch = g_portrait || g_mobile;        /* touch: drag scrolls, a tap (no drag) selects */
     if (touch) {
         if (mouse_down) {
-            if (!sb_pd && mx >= x && mx < x + w && my >= y && my < y + h) { sb_pd = 1; sb_py0 = my; sb_moved = 0; sb_pressed = 1; }
-            if (sb_pd && fabsf(my - sb_py0) > 8) sb_moved = 1;
-        } else if (sb_pd) { sb_pd = 0; if (!sb_moved && !lp_swallow && !ctx_swallow) sb_tap = 1; lp_swallow = 0; ctx_swallow = 0; }
+            if (!sb_pd && mx >= x && mx < x + w && my >= y && my < y + h) { sb_pd = 1; sb_py0 = my; sb_px0 = mx; sb_moved = 0; sb_pressed = 1; }
+            if (sb_pd && (fabsf(my - sb_py0) > 8 || fabsf(mx - sb_px0) > 8)) sb_moved = 1;
+        } else if (sb_pd) {
+            sb_pd = 0;
+            if (browse && !fav_mode && !br_at_root() && !lp_swallow && !ctx_swallow && mx - sb_px0 > 70 && mx - sb_px0 > 1.6f * fabsf(my - sb_py0)) browse_up();     /* a swipe to the right: one level up (like the back gesture of iOS) */
+            else if (!sb_moved && !lp_swallow && !ctx_swallow) sb_tap = 1;
+            lp_swallow = 0; ctx_swallow = 0;
+        }
         else ctx_swallow = 0;
     }
         card(x, y, w, h, 0);
@@ -1747,9 +1752,20 @@ static void draw_sidebar(float x, float y, float w, float h) {
         if (browse) {
             char crumb[800];
             snprintf(crumb, sizeof crumb, "/%s", rpath);
-            fit_text(crumb, w - 36, 12);
-            text(x + 18, ry, 12, FAINT, crumb);
-            ry += 22; area -= 22 + 18;
+            if (!NG_TV && !br_at_root()) {    /* a fixed bar above the list (it does not scroll away): a tap goes one level up, the path of the folder is in it */
+                const float bh = 30;
+                int hv = hit(x + 10, ry - 4, w - 20, bh);
+                rrect(x + 10, ry - 4, w - 20, bh, 8, alpha(VC[2], hv ? 0.28f : 0.16f));
+                text(x + 20, ry + 2, 14, TXT, "<");
+                fit_text(crumb, w - 36 - 22, 12);
+                text(x + 38, ry + 3, 12, DIM, crumb);
+                if (sb_click(x + 10, ry - 4, w - 20, bh)) { browse_up(); click = 0; }
+                ry += bh + 6; area -= bh + 6 + 18;
+            } else {
+                fit_text(crumb, w - 36, 12);
+                text(x + 18, ry, 12, FAINT, crumb);
+                ry += 22; area -= 22 + 18;
+            }
         }
         float *sc = fav_mode ? &fav_scroll : browse ? &br_scroll : &list_scroll;
         int fc = fav_mode ? fav_cur() : -1;
@@ -3168,6 +3184,7 @@ int main(int argc, char **argv) {
 #endif
     fav_load();
     if (getenv("NGSID_TEST_FAV")) fav_mode = 1;                     /* test hook: start with the FAV tab */
+    if (getenv("NGSID_TEST_BROWSE")) { browse = 1; fav_mode = 0; job_start(0, getenv("NGSID_TEST_BROWSE")); }     /* test hook: start in the HVSC browser, in this folder (e.g. MUSICIANS/H/Hubbard_Rob/) */
     if (getenv("NGSID_TEST_ORB")) g_orb = 1;                        /* test hook: start with the orb instead of the voices */
     if (getenv("NGSID_TEST_NOTES")) g_orb = 2;                      /* test hook: start with the notes */
     if (getenv("NGSID_TEST_TOGGLE")) fav_toggle(getenv("NGSID_TEST_TOGGLE"));   /* test hook: favorite on / off for this HVSC path at the start */

@@ -1084,6 +1084,39 @@ static void fav_toggle(const char *rel) {
     toast_t = 2.0f;
     fav_save();
 }
+#if defined(__APPLE__) && TARGET_OS_TV
+/* ---- Apple TV: the context menu (Select held) and the favorites list ---------------------------------------------------------------------------------------------
+ * Select held (0.5 s) opens a menu: add / remove the favorite (the tune in the browser row, or the playing one), show the favorites / the HVSC browser, cancel.
+ * Up / Down choose, Select acts, Menu closes. The favorites list: Up / Down choose a tune, Select plays it, Menu goes back to the browser. */
+static int tv_fav_sel;                                                   /* the marked row of the favorites list */
+static Uint32 tv_dn_t; static int tv_dn_armed;                          /* Select is down: acts on release, held 0.5 s = the menu */
+static int tv_ctx_open, tv_ctx_sel, tv_ctx_n, tv_ctx_it[4]; static Uint32 tv_ctx_t;
+static char tv_ctx_rel[768];                                             /* the tune the favorite entry of the menu is about */
+enum { TVC_FAV = 1, TVC_SHOWFAV, TVC_SHOWBROWSER, TVC_CANCEL };
+static void tv_ctx_show(void) {
+    tv_ctx_rel[0] = 0;
+    if (fav_mode) { if (tv_fav_sel >= 0 && tv_fav_sel < nfav) snprintf(tv_ctx_rel, sizeof tv_ctx_rel, "%s", fav[tv_fav_sel].rel); }
+    else {
+        int off = br_at_root() ? 0 : 1, i = br_sel - off;
+        if (browse && i >= 0 && i < nbe && !be[i].dir) snprintf(tv_ctx_rel, sizeof tv_ctx_rel, "%s%s", rpath, be[i].name);
+        else if (cur >= 0 && cur < npl && pl[cur].rel) snprintf(tv_ctx_rel, sizeof tv_ctx_rel, "%s", pl[cur].rel);
+    }
+    tv_ctx_n = 0;
+    if (tv_ctx_rel[0]) tv_ctx_it[tv_ctx_n++] = TVC_FAV;
+    tv_ctx_it[tv_ctx_n++] = fav_mode ? TVC_SHOWBROWSER : TVC_SHOWFAV;
+    tv_ctx_it[tv_ctx_n++] = TVC_CANCEL;
+    tv_ctx_open = 1; tv_ctx_sel = 0; tv_ctx_t = SDL_GetTicks();
+}
+static void tv_ctx_act(void) {
+    int a = tv_ctx_it[tv_ctx_sel]; tv_ctx_open = 0; tv_ctx_t = SDL_GetTicks();
+    switch (a) {
+    case TVC_FAV: fav_toggle(tv_ctx_rel); if (tv_fav_sel >= nfav) tv_fav_sel = nfav - 1; if (tv_fav_sel < 0) tv_fav_sel = 0; break;
+    case TVC_SHOWFAV: fav_mode = 1; browse = 0; if (tv_fav_sel >= nfav) tv_fav_sel = 0; break;
+    case TVC_SHOWBROWSER: fav_mode = 0; browse = 1; break;
+    default: break;
+    }
+}
+#endif
 static int hit(float x, float y, float w, float h) { return mx >= x && mx < x + w && my >= y && my < y + h; }
 static int clicked(float x, float y, float w, float h) { return click && clickx >= x && clickx < x + w && clicky >= y && clicky < y + h; }
 
@@ -1680,6 +1713,21 @@ static void ctx_open(const char *rel) {
     if (ctx_x + CTX_W > view_w - 4) ctx_x = view_w - 4 - CTX_W;
     if (ctx_y + ctx_h() > view_h - 4) ctx_y = view_h - 4 - ctx_h();
 }
+#if defined(__APPLE__) && TARGET_OS_TV
+static void tv_ctx_draw(float W, float H) {                              /* the menu (Select held): a panel in the middle, the chosen row marked */
+    if (!tv_ctx_open) return;
+    const char *fav_txt = fav_find(tv_ctx_rel) >= 0 ? "Remove from favorites" : "Add to favorites";
+    const char *nm[5] = { "", fav_txt, "Show favorites", "Show the HVSC browser", "Cancel" };
+    float rh = 54, pw = 560, ph = 24 + (float)tv_ctx_n * rh + 24, px = (W - pw) / 2, py = (H - ph) / 2;
+    rect(0, 0, W, H, alpha(BG0, 0.55f));
+    rrect(px - 1, py - 1, pw + 2, ph + 2, 15, alpha(EDGE, 0.9f)); rrect(px, py, pw, ph, 14, CARDHI);
+    for (int j = 0; j < tv_ctx_n; j++) {
+        float yy = py + 24 + (float)j * rh;
+        if (j == tv_ctx_sel) rrect(px + 10, yy, pw - 20, rh - 6, 9, alpha(VC[0], 0.30f));
+        text(px + 34, yy + (rh - 6 - 22) / 2, 22, j == tv_ctx_sel ? TXT : DIM, nm[tv_ctx_it[j]]);
+    }
+}
+#endif
 static void draw_ctx_menu(double dt) {
     if (ctx_on) {
         const char *const item[3] = { "Share", "Info", fav_find(ctx_rel) >= 0 ? "Remove Favorite" : "Add Favorite" };
@@ -1719,9 +1767,15 @@ static void draw_sidebar(float x, float y, float w, float h) {
         float t2 = x + 18 + tw1 + 22, t3 = t2 + tw2 + 22;
         int in_pl = !browse && !fav_mode;
         if (NG_TV) {
+#if defined(__APPLE__) && TARGET_OS_TV
+            if (fav_mode) { browse = 0; text(x + 18, y + 12, 20, TXT, "FAVORITES"); }
+            else
+#endif
+            {
             browse = 1; fav_mode = 0;
             text(x + 18, y + 12, 20, TXT, "HVSC");
             text(x + 18 + text_width("HVSC", 20) + 12, y + 14, 14, VC[2], "MUSICIANS");
+            }
         } else
         if (g_portrait) {                 /* touch: real tab buttons instead of plain text */
             rrect(x + 8, y + 6, tw1 + 20, 30, 8, in_pl ? alpha(VC[2], 0.25f) : alpha(FAINT, 0.16f));
@@ -1792,6 +1846,9 @@ static void draw_sidebar(float x, float y, float w, float h) {
             if (yy + rh > y + h - 36) break;
             int isc = !browse && !fav_mode && i == cur, anc = 0;
             if (fav_mode) isc = i == fc;
+#if defined(__APPLE__) && TARGET_OS_TV
+            if (fav_mode) isc = i == tv_fav_sel;
+#endif
             if (browse) {
                 isc = i == browse_cur_row();
                 if (!isc && i >= boff && be[i - boff].dir && cur >= 0 && pl[cur].rel) {
@@ -2852,13 +2909,17 @@ static int url_hvsc_path(const char *u, char *out, size_t cap) {
 static Uint32 *tv_menu_note;        /* Apple TV: the time of the last Menu press (see iter) */
 static void iter(void) {
 #if defined(__APPLE__) && TARGET_OS_TV
-    {   /* The system takes the Menu button over completely while "controller UI events" are on (the press goes Home whatever the app does with it): they are on at the top
-         * of the browser and in the playlist only; deeper in the tree the app gets the press as Escape and goes one level up. Not switched while a press is on its way. */
-        static Uint32 menu_t;
-        if (SDL_GetTicks() - menu_t > 600) SDL_SetHint(SDL_HINT_APPLE_TV_CONTROLLER_UI_EVENTS, browse && !br_at_root() ? "0" : "1");
+    {   /* The system takes the Menu button over completely while "controller UI events" are on (the press goes Home whatever the app does with it): they are on only where Menu should
+         * leave (top of the browser; not in the favorites list, not with the menu open); there the app gets the press as Escape (one level up / close). Not switched while a press is on its way. */
+        static Uint32 menu_t; int pass = !tv_ctx_open && !fav_mode && !(browse && !br_at_root());
+        if (SDL_GetTicks() - menu_t > 600) SDL_SetHint(SDL_HINT_APPLE_TV_CONTROLLER_UI_EVENTS, pass ? "1" : "0");
         tv_menu_note = &menu_t;
+        SDL_SetHint("NG_TV_MENU_TO_SYSTEM", pass ? "1" : "0");
+        if (tv_dn_armed && SDL_GetTicks() - tv_dn_t >= 500) { tv_dn_armed = 0; tv_ctx_show(); }
+        if (getenv("NGSID_TEST_TVCTX")) { static int o; if (!o && SDL_GetTicks() > 4000) { o = 1;
+            if (getenv("NGSID_TEST_TVFAV")) { if (!nfav) { fav_add_raw("MUSICIANS/H/Hubbard_Rob/Commando.sid"); fav_add_raw("MUSICIANS/G/Galway_Martin/Comic_Bakery.sid"); } fav_mode = 1; browse = 0; }
+            tv_ctx_show(); } }                                    /* test hook: the menu (and the favorites list) */
     }
-    SDL_SetHint("NG_TV_MENU_TO_SYSTEM", browse && !br_at_root() ? "0" : "1");      /* the Menu button: one level up in the browser, otherwise to the Apple TV home screen (patched SDL; no black screen) */
 #endif
         SDL_Event e;
         click = 0; rclick = 0;
@@ -2898,9 +2959,48 @@ static void iter(void) {
                 if (npl > was && cur < 0) play_index(was, 0);
                 break;
             }
+#if defined(__APPLE__) && TARGET_OS_TV
+            case SDL_KEYUP:                                                         /* Select acts on release (a long press opens the menu instead) */
+                if ((e.key.keysym.sym == SDLK_RETURN || e.key.keysym.sym == SDLK_KP_ENTER) && tv_dn_armed) {
+                    tv_dn_armed = 0;
+                    if (tv_ctx_open) break;
+                    if (fav_mode) { if (tv_fav_sel >= 0 && tv_fav_sel < nfav && !SDL_AtomicGet(&job.state)) job_start(1, fav[tv_fav_sel].rel); }
+                    else if (browse) browse_activate(br_sel);
+                }
+                break;
+#endif
             case SDL_KEYDOWN:
+#if defined(__APPLE__) && TARGET_OS_TV
+                if (tv_ctx_open) {                                                  /* the menu is open: Up / Down choose, Select acts, Menu closes */
+                    switch (e.key.keysym.sym) {
+                    case SDLK_UP: if (tv_ctx_sel > 0) tv_ctx_sel--; break;
+                    case SDLK_DOWN: if (tv_ctx_sel + 1 < tv_ctx_n) tv_ctx_sel++; break;
+                    case SDLK_RETURN: case SDLK_KP_ENTER: if (!e.key.repeat && SDL_GetTicks() - tv_ctx_t > 350) tv_ctx_act(); break;
+                    case SDLK_ESCAPE: if (tv_menu_note) *tv_menu_note = SDL_GetTicks(); tv_ctx_open = 0; tv_ctx_t = SDL_GetTicks(); break;
+                    default: break;
+                    }
+                    break;
+                }
+                {   int hd = 1;
+                    switch (e.key.keysym.sym) {
+                    case SDLK_RETURN: case SDLK_KP_ENTER: if (!e.key.repeat) { tv_dn_t = SDL_GetTicks(); tv_dn_armed = 1; } break;
+                    case SDLK_UP: if (fav_mode) { if (tv_fav_sel > 0) tv_fav_sel--; } else hd = 0; break;
+                    case SDLK_DOWN: if (fav_mode) { if (tv_fav_sel + 1 < nfav) tv_fav_sel++; } else hd = 0; break;
+                    default: hd = 0; break;
+                    }
+                    if (hd) break;
+                }
+#endif
                 switch (e.key.keysym.sym) {
-                case SDLK_ESCAPE: if (tv_menu_note) *tv_menu_note = SDL_GetTicks(); if (NG_TV && browse && !br_at_root()) browse_up(); else running = 0; break;      /* Apple TV: the Menu button goes one level up, at the top it leaves */
+#if defined(__APPLE__) && TARGET_OS_TV
+                case SDLK_ESCAPE: if (tv_menu_note) *tv_menu_note = SDL_GetTicks();
+                    if (tv_ctx_open) { tv_ctx_open = 0; tv_ctx_t = SDL_GetTicks(); }
+                    else if (fav_mode) { fav_mode = 0; browse = 1; }
+                    else if (browse && !br_at_root()) browse_up(); else running = 0;
+                    break;                                                          /* Apple TV: the Menu button closes the menu / leaves the favorites / goes one level up, at the top it leaves */
+#else
+                case SDLK_ESCAPE: running = 0; break;
+#endif
                 case SDLK_SPACE: g_paused = !g_paused; break;
                 case SDLK_PAUSE:
 #if defined(__APPLE__) && TARGET_OS_TV
@@ -3067,6 +3167,9 @@ static void iter(void) {
         gfx_set_params(view_w, view_h, view_scale);
         gfx_set_texture(fonttex);
         draw_ui(&snap, (double)(now - t0) / freq, dt);
+#if defined(__APPLE__) && TARGET_OS_TV
+        tv_ctx_draw(view_w, view_h);
+#endif
         draw_ctx_menu(dt);
         set_additive(0);
         flush();

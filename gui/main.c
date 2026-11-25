@@ -522,7 +522,7 @@ static int is_sid_name(const char *n) {
 static void add_file(const char *path) {
     pl = (entry *)realloc(pl, (size_t)(npl + 1) * sizeof *pl);
     pl[npl].path = strdup(path);
-    pl[npl].rel = NULL;
+    pl[npl].rel = getenv("NGSID_TEST_REL") ? strdup(getenv("NGSID_TEST_REL")) : NULL;      /* test hook: a fake HVSC path (the link in the Info view) */
     const char *b = strrchr(path, '/');
     b = b ? b + 1 : path;
     char tmp[200];
@@ -1592,6 +1592,7 @@ static void ob_init(void) {
         }
 }
 
+static void open_deepsid(const char *rel);
 #include "c64.inc"
 static void draw_orb(float x, float y, float w, float h, float dtf) {
     static int init;
@@ -1706,12 +1707,13 @@ static void ctx_share(void) {
 #endif
     snprintf(toast_txt, sizeof toast_txt, "Link copied"); toast_t = 2.0f;
 }
-static void ctx_info(void) {                                       /* the tune on DeepSID (composer, STIL info, song list) */
+static void open_deepsid(const char *rel) {                       /* the tune on DeepSID (composer, STIL info, song list) */
     char enc[1024], url[1100];
-    url_enc_path(ctx_rel, enc, sizeof enc);
+    url_enc_path(rel, enc, sizeof enc);
     snprintf(url, sizeof url, "https://deepsid.chordian.net/?file=/%s", enc);
     open_url(url);
 }
+static void ctx_info(void) { open_deepsid(ctx_rel); }
 static void ctx_open(const char *rel) {
     snprintf(ctx_rel, sizeof ctx_rel, "%s", rel);
     ctx_on = 1; rclick = 0;

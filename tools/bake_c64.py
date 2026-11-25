@@ -6,6 +6,7 @@
 #   1 keys   - the keyboard, textured with a photo (RGB565)
 #   2 badge  - the badge, textured (RGB565)
 #   3 glass  - the see-through parts (case, plate): a colour with alpha per vertex, blended last
+#   4 led    - the LEDs (nodes PowerLED, GreenLED, LED0..3): drawn bright, their colour follows the light of the Info view
 # Positions are int16 in 1/20000 of half the length of the case (the model is 0.4 long: x in -1..1).
 import io, os, sys
 import numpy as np
@@ -15,7 +16,7 @@ from glb import load, acc
 
 Q = 20000.0
 HALF = 0.2
-TEX = ((512, 128), (512, 64))          # the keys picture (2048 x 512) and the badge (about 800 x 110), scaled
+TEX = ((1024, 256), (512, 64))         # the keys picture (2048 x 512) and the badge (about 800 x 110), scaled
 
 
 def arr(name, ctype, vals, per=24):
@@ -38,7 +39,7 @@ def rgb565(img):
 
 def bake(path, tag):
     j, b = load(path)
-    parts = {k: ([], [], [], []) for k in ('solid', 'keys', 'badge', 'glass')}      # positions, uvs, colours, indices
+    parts = {k: ([], [], [], []) for k in ('solid', 'keys', 'badge', 'glass', 'led')}      # positions, uvs, colours, indices
     base = {k: 0 for k in parts}
     for n in j['nodes']:
         pr = j['meshes'][n['mesh']]['primitives'][0]
@@ -54,6 +55,8 @@ def bake(path, tag):
             f = pb.get('baseColorFactor', [1, 1, 1, 1])
             col = [int(round(x * 255)) for x in f]
             kind = 'glass' if mat.get('alphaMode') == 'BLEND' else 'solid'
+            if n.get('name', '') in ('PowerLED', 'GreenLED') or n.get('name', '').startswith('LED'): kind = 'led'
+            if kind == 'glass': col[3] = 128                      # every case is equally milky (alpha 0.5)
             uv = np.zeros((len(p), 2), dtype=np.float32)
         P, U, C, I = parts[kind]
         P.append(p.astype(np.float64)); U.append(uv.astype(np.float64)); C.append(np.tile(np.array(col, dtype=np.uint8), (len(p), 1)))
@@ -64,7 +67,7 @@ def bake(path, tag):
     centre = np.array([(mn[0] + mx[0]) / 2, mn[1], (mn[2] + mx[2]) / 2])
     out = ''
     sizes = []
-    for k in ('solid', 'keys', 'badge', 'glass'):
+    for k in ('solid', 'keys', 'badge', 'glass', 'led'):
         P, U, C, I = parts[k]
         if not P:
             out += '#define %s_%s_NV 0\n#define %s_%s_NI 0\n' % (tag, k.upper(), tag, k.upper())

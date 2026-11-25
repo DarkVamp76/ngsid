@@ -322,6 +322,9 @@ static const char *C64_FS =
     "  vec3 c=vcol.rgb*(0.45+0.45*d)+L*(0.55+1.0*rim);\n"
     "  float a=clamp(vcol.a+0.45*rim+0.12*uled.w,0.0,0.95);\n"
     "  o=vec4(c*a,a); }\n"
+    " else if(umode==3){\n"
+    "  vec3 lc=hsv(uled.x+vp.x*uled.y*2.0+vp.z*0.5,0.9,1.0);\n"
+    "  o=vec4(mix(vcol.rgb,lc,0.75)*(0.8+1.6*uled.w),1.0); }\n"
     " else {\n"
     "  vec3 base=umode==1?texture(tex,vuv).rgb:vcol.rgb;\n"
     "  float sh=umode==1?0.62+0.55*d:0.36+0.64*d;\n"
@@ -367,7 +370,7 @@ gfx_tex *gfx_target_create(int w, int h) {
     return t;
 }
 
-void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh *solid, gfx_mesh *keys, gfx_tex *keys_tex, gfx_mesh *badge, gfx_tex *badge_tex, gfx_mesh *glass, const float *led) {
+void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh *solid, gfx_mesh *keys, gfx_tex *keys_tex, gfx_mesh *badge, gfx_tex *badge_tex, gfx_mesh *glass, gfx_mesh *leds, const float *led) {
     if (!c64_prog) {
         c64_prog = glCreateProgram();
         GLuint vs = (GLuint)gl_compile(GL_VERTEX_SHADER, C64_VS), fs = (GLuint)gl_compile(GL_FRAGMENT_SHADER, C64_FS);
@@ -394,6 +397,7 @@ void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh
     glDrawElements(GL_TRIANGLES, keys->n, GL_UNSIGNED_SHORT, (const void *)0);
     glBindTexture(GL_TEXTURE_2D, badge_tex->id); glBindVertexArray(badge->vao);
     glDrawElements(GL_TRIANGLES, badge->n, GL_UNSIGNED_SHORT, (const void *)0);
+    if (leds) { glUniform1i(c64_umode, 3); glBindVertexArray(leds->vao); glDrawElements(GL_TRIANGLES, leds->n, GL_UNSIGNED_SHORT, (const void *)0); }
     /* the glass last: blended, no depth writes, first the far side, then the near side */
     if (glass) {
     glUniform1i(c64_umode, 2);
@@ -402,8 +406,9 @@ void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh
     glEnable(GL_CULL_FACE); glBindVertexArray(glass->vao);
     glCullFace(GL_FRONT); glDrawElements(GL_TRIANGLES, glass->n, GL_UNSIGNED_SHORT, (const void *)0);
     glCullFace(GL_BACK); glDrawElements(GL_TRIANGLES, glass->n, GL_UNSIGNED_SHORT, (const void *)0);
-    glDisable(GL_CULL_FACE); glDepthMask(1); glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE); glDepthMask(1);
     }
+    glDisable(GL_DEPTH_TEST);                                          /* the 2D renderer draws without depth */
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(g_vp[0], g_vp[1], g_vp[2], g_vp[3]);

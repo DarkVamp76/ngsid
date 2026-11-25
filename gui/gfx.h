@@ -43,7 +43,7 @@ typedef struct { float x, y, z, u, v; unsigned char r, g, b, a; } gfx_v3;      /
 gfx_mesh *gfx_mesh_create(const gfx_v3 *verts, int nverts, const uint16_t *idx, int nidx);
 gfx_tex *gfx_target_create(int w, int h);             /* an RGBA render target with a depth buffer (mip chain made after every pass); usable as a texture */
 int      gfx_target_v_flipped(void);                  /* 1: a picture drawn into a target has to be sampled with 1 - v (OpenGL); 0: with v (Metal) */
-/* draws the C64: solid (colour per vertex), keys and badge (textured), glass (alpha, blended last); led = hue (0..1), spread (hue change across the case), saturation, strength of the light inside */
-void     gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh *solid, gfx_mesh *keys, gfx_tex *keys_tex, gfx_mesh *badge, gfx_tex *badge_tex, gfx_mesh *glass, const float *led);
+/* draws the C64: solid (colour per vertex), keys and badge (textured), the LEDs (bright, coloured by the light), glass (alpha, blended last); led = hue (0..1), spread (hue change across the case), saturation, strength of the light inside */
+void     gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh *solid, gfx_mesh *keys, gfx_tex *keys_tex, gfx_mesh *badge, gfx_tex *badge_tex, gfx_mesh *glass, gfx_mesh *leds, const float *led);
 
 #endif

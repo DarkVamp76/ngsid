@@ -2458,7 +2458,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             float ccx = ax + 22 + tw + 12 + c64bb / 2, ccy = hy + hh / 2 - 1;
             int hv = c64_hit(mx, my, ccx, ccy, c64w, c64h, c64ang);
             float grow = hv ? 1.08f : 1.0f;
-            draw_c64(c64i, ccx, ccy, c64w * grow, c64h * grow, c64ang, 1.0f);
+            if (!c64d_header(c64i, ccx, ccy, c64w * grow * 1.5f, c64h * grow * 1.5f, (float)dt)) draw_c64(c64i, ccx, ccy, c64w * grow, c64h * grow, c64ang, 1.0f);      /* the 3D one turns all the way round */
             if (click && c64_hit((float)clickx, (float)clicky, ccx, ccy, c64w, c64h, c64ang)) { open_url("https://commodore.net/computer/"); click = 0; }
         }
         text(ax + 22, hy + 14, tsize, TXT, title);

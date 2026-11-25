@@ -120,6 +120,7 @@ typedef long GLintptr;
     X(void, glDrawElements, (GLenum, GLsizei, GLenum, const void *)) \
     X(void, glUniformMatrix4fv, (GLint, GLsizei, unsigned char, const GLfloat *)) \
     X(void, glUniform4f, (GLint, GLfloat, GLfloat, GLfloat, GLfloat)) \
+    X(void, glUniform4fv, (GLint, GLsizei, const GLfloat *)) \
     X(void, glActiveTexture, (GLenum)) \
     X(void, glBindFramebuffer, (GLenum, GLuint)) \
     X(void, glGenFramebuffers, (GLsizei, GLuint *)) \
@@ -310,27 +311,37 @@ static const char *C64_VS =
  * rainbow that runs over the C64 (the hue follows the position), it lights the keys from below, the board and the case */
 static const char *C64_FS =
     GLSL_VERSION
-    "in vec3 vv; in vec3 vp; in vec2 vuv; in vec4 vcol; out vec4 o; uniform sampler2D tex; uniform int umode; uniform vec4 uled;\n"
+    "in vec3 vv; in vec3 vp; in vec2 vuv; in vec4 vcol; out vec4 o; uniform sampler2D tex; uniform int umode; uniform vec4 uled; uniform vec4 upts[6];\n"
     "vec3 hsv(float h,float s,float v){ vec3 k=clamp(abs(fract(h+vec3(0.0,2.0/3.0,1.0/3.0))*6.0-3.0)-1.0,0.0,1.0); return v*mix(vec3(1.0),k,s); }\n"
+    "float hash(vec2 c){ return fract(sin(dot(c,vec2(12.9898,78.233)))*43758.5453); }\n"
+    "vec3 glow(vec3 p){ vec3 g=vec3(0.0); for(int i=0;i<6;i++){ float d=distance(p,upts[i].xyz); float a=1.0/(1.0+d*d*45.0); g+=hsv(uled.x+0.17*float(i)+0.05,0.85,1.0)*a*a; } return g*uled.w; }\n"
     "void main(){\n"
     " vec3 n=normalize(cross(dFdx(vv),dFdy(vv))); if(dot(n,-vv)<0.0) n=-n;\n"
     " float d=max(dot(n,normalize(vec3(0.33,0.52,0.79))),0.0);\n"
     " float sp=0.65+0.35*sin(vp.x*38.0+uled.x*40.0)*sin(vp.z*53.0-uled.x*25.0);\n"
     " vec3 L=hsv(uled.x+vp.x*uled.y+vp.z*0.18,uled.z,1.0)*uled.w;\n"
+    " vec3 G=glow(vp);\n"
     " if(umode==2){\n"
-    "  float rim=pow(1.0-abs(dot(n,normalize(-vv))),2.0);\n"
-    "  vec3 c=vcol.rgb*(0.45+0.45*d)+L*(0.55+1.0*rim);\n"
-    "  float a=clamp(vcol.a+0.45*rim+0.12*uled.w,0.0,0.95);\n"
+    "  float rim=pow(1.0-abs(dot(n,normalize(-vv))),3.0);\n"
+    "  vec3 rc=hsv(uled.x+vp.x*uled.y*1.5+vp.z*0.3+0.1,1.0,1.0);\n"
+    "  vec3 c=vec3(0.86,0.89,0.98)*(0.40+0.45*d)+L*0.30+rc*rim*uled.w*2.4+G*1.4;\n"
+    "  float a=clamp(vcol.a*1.05+0.45*rim+length(G)*0.25,0.0,0.95);\n"
     "  o=vec4(c*a,a); }\n"
     " else if(umode==3){\n"
-    "  vec3 lc=hsv(uled.x+vp.x*uled.y*2.0+vp.z*0.5,0.9,1.0);\n"
-    "  o=vec4(mix(vcol.rgb,lc,0.75)*(0.8+1.6*uled.w),1.0); }\n"
+    "  vec3 lc=hsv(uled.x+vp.x*uled.y*2.0+vp.z*0.5,0.8,1.0);\n"
+    "  o=vec4(mix(vcol.rgb,lc,0.8)*(1.3+2.2*uled.w)+vec3(0.35),1.0); }\n"
+    " else if(umode==1){\n"
+    "  bool red=vcol.r>0.5;\n"
+    "  float h=hash(floor(vuv*vec2(16.0,4.0)));\n"
+    "  vec3 kc=hsv(uled.x+0.55*h+vp.x*0.2,0.85,1.0);\n"
+    "  vec3 base=vcol.rgb*(0.35+0.9*d);\n"
+    "  o=vec4(base+(red?vec3(0.0):kc*uled.w*(0.60+0.40*sp)*(0.50+0.50*d))+G*0.5,1.0); }\n"
     " else {\n"
     "  vec3 base=umode==4?texture(tex,vuv).rgb:vcol.rgb;\n"
     "  float sh=umode==4?0.62+0.55*d:0.30+0.80*d;\n"
-    "  o=vec4(base*sh+L*(umode==1?0.62*sp:(umode==4?0.30:0.30*sp)),1.0); } }\n";
+    "  o=vec4(base*sh*(umode==4?1.0:0.75)+L*(umode==4?0.30:0.18*sp)+G*0.7,1.0); } }\n";
 
-static GLuint c64_prog; static GLint c64_mvp, c64_mv, c64_umode, c64_utex, c64_uled;
+static GLuint c64_prog; static GLint c64_mvp, c64_mv, c64_umode, c64_utex, c64_uled, c64_upts;
 
 gfx_mesh *gfx_mesh_create(const gfx_v3 *verts, int nverts, const uint16_t *idx, int nidx) {
     gfx_mesh *m = (gfx_mesh *)calloc(1, sizeof *m);
@@ -370,7 +381,7 @@ gfx_tex *gfx_target_create(int w, int h) {
     return t;
 }
 
-void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh *solid, gfx_mesh *keys, gfx_tex *keys_tex, gfx_mesh *badge, gfx_tex *badge_tex, gfx_mesh *glass, gfx_mesh *leds, const float *led) {
+void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh *solid, gfx_mesh *keys, gfx_tex *keys_tex, gfx_mesh *badge, gfx_tex *badge_tex, gfx_mesh *glass, gfx_mesh *leds, const float *led, const float *pts) {
     if (!c64_prog) {
         c64_prog = glCreateProgram();
         GLuint vs = (GLuint)gl_compile(GL_VERTEX_SHADER, C64_VS), fs = (GLuint)gl_compile(GL_FRAGMENT_SHADER, C64_FS);
@@ -378,7 +389,7 @@ void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh
         GLint ok = 0; glGetProgramiv(c64_prog, GL_LINK_STATUS, &ok);
         if (!ok) { char log[1024]; glGetProgramInfoLog(c64_prog, sizeof log, NULL, log); fprintf(stderr, "c64 link: %s\n", log); }
         c64_mvp = glGetUniformLocation(c64_prog, "mvp"); c64_mv = glGetUniformLocation(c64_prog, "mv");
-        c64_umode = glGetUniformLocation(c64_prog, "umode"); c64_utex = glGetUniformLocation(c64_prog, "tex"); c64_uled = glGetUniformLocation(c64_prog, "uled");
+        c64_umode = glGetUniformLocation(c64_prog, "umode"); c64_utex = glGetUniformLocation(c64_prog, "tex"); c64_uled = glGetUniformLocation(c64_prog, "uled"); c64_upts = glGetUniformLocation(c64_prog, "upts");
     }
     GLint vp0[4] = { 0 }; (void)vp0;
     glBindFramebuffer(GL_FRAMEBUFFER, target->fbo);
@@ -388,7 +399,7 @@ void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh
     glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LESS);
     glUseProgram(c64_prog);
     glUniformMatrix4fv(c64_mvp, 1, 0, mvp); glUniformMatrix4fv(c64_mv, 1, 0, mv);
-    glUniform1i(c64_utex, 0); glUniform4f(c64_uled, led[0], led[1], led[2], led[3]);
+    glUniform1i(c64_utex, 0); glUniform4f(c64_uled, led[0], led[1], led[2], led[3]); glUniform4fv(c64_upts, 6, pts);
     glActiveTexture(GL_TEXTURE0);
     glBindVertexArray(solid->vao); glUniform1i(c64_umode, 0);
     glDrawElements(GL_TRIANGLES, solid->n, GL_UNSIGNED_SHORT, (const void *)0);

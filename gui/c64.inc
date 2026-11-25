@@ -4,12 +4,12 @@
 #include "c64_data.h"
 
 typedef struct { const int16_t *pos; const uint16_t *uv; const uint8_t *col; const uint16_t *idx; int nv, ni; } C64Part;
-typedef struct { C64Part p[5]; const uint16_t *ktex, *btex; int ktw, kth, btw, bth; } C64Model;     /* parts: solid, keys, badge, glass */
+typedef struct { C64Part p[5]; const uint16_t *ktex, *btex; int ktw, kth, btw, bth; const int16_t *ledpts; } C64Model;     /* parts: solid, keys, badge, glass */
 #define C64P(T, t, K, k) { t##_##k##_pos, t##_##k##_uv, t##_##k##_col, t##_##k##_idx, T##_##K##_NV, T##_##K##_NI }
-#define C64M(T, t) { { C64P(T, t, SOLID, solid), C64P(T, t, KEYS, keys), C64P(T, t, BADGE, badge), C64P(T, t, GLASS, glass), C64P(T, t, LED, led) }, t##_keys_tex, t##_badge_tex, T##_KEYS_TW, T##_KEYS_TH, T##_BADGE_TW, T##_BADGE_TH }
+#define C64M(T, t) { { C64P(T, t, SOLID, solid), C64P(T, t, KEYS, keys), C64P(T, t, BADGE, badge), C64P(T, t, GLASS, glass), C64P(T, t, LED, led) }, t##_keys_tex, t##_badge_tex, T##_KEYS_TW, T##_KEYS_TH, T##_BADGE_TW, T##_BADGE_TH, t##_ledpts }
 static const C64Model C64D[2] = { C64M(C64_6581, c64_6581), C64M(C64_8580, c64_8580) };
 
-typedef struct { gfx_mesh *mesh[5]; gfx_tex *ktex, *btex, *target, *target2; int ready; } C64Gl;
+typedef struct { gfx_mesh *mesh[5]; gfx_tex *ktex, *btex, *target, *target2; int ready; float pts[24]; } C64Gl;
 static const float C64_YSC[2] = { 1.00f, 1.50f };      /* height of the model: 6581 breadbin file 7.2 cm (real 7 to 8 cm), the 8580 C64C file only 3.8 cm (real 5.7 to 7 cm) */
 static C64Gl c64gl[2];
 #define C64_TW 1100
@@ -42,6 +42,7 @@ static void c64d_setup(int mi) {
         g->mesh[k] = gfx_mesh_create(v, p->nv, p->idx, p->ni);
         free(v);
     }
+    for (int i = 0; i < 6; i++) { g->pts[4 * i] = (float)m->ledpts[3 * i] / 20000.0f; g->pts[4 * i + 1] = (float)m->ledpts[3 * i + 1] / 20000.0f; g->pts[4 * i + 2] = (float)m->ledpts[3 * i + 2] / 20000.0f; g->pts[4 * i + 3] = 0; }
     g->ktex = c64d_tex565(m->ktex, m->ktw, m->kth);
     g->btex = c64d_tex565(m->btex, m->btw, m->bth);
     g->target = gfx_target_create(C64_TW, C64_TH);
@@ -110,7 +111,7 @@ static int c64d_header(int mi, float cx, float cy, float w, float h, float dtf) 
     float mvp[16], mv[16], led[4] = { c64d_hue + c64d_drift, 0.30f, 0.88f, c64d_glow };
     c64d_matrices(c64d_t * 0.9f, 0.50f, 0.80f, 440.0f / 256.0f, C64_YSC[mi], mvp, mv);
     flush();
-    gfx_c64_render(g->target2, mvp, mv, g->mesh[0], g->mesh[1], g->ktex, g->mesh[2], g->btex, g->mesh[3], g->mesh[4], led);
+    gfx_c64_render(g->target2, mvp, mv, g->mesh[0], g->mesh[1], g->ktex, g->mesh[2], g->btex, g->mesh[3], g->mesh[4], led, g->pts);
     float vt = gfx_target_v_flipped() ? 1.0f : 0.0f, vb = 1.0f - vt, bh = h, bw = h * 440.0f / 256.0f;
     col c = C(1, 1, 1, 1);
     gfx_set_texture(g->target2);
@@ -143,7 +144,7 @@ static void draw_info(float x, float y, float w, float h, float dtf) {
         c64d_matrices(ang, tilt, 0.68f, (float)C64_TW / (float)C64_TH, C64_YSC[mi], mvp, mv);
         float led[4] = { hue + drift, 0.30f, 0.88f, glow };
         flush();
-        gfx_c64_render(g->target, mvp, mv, g->mesh[0], g->mesh[1], g->ktex, g->mesh[2], g->btex, noglass ? NULL : g->mesh[3], g->mesh[4], led);
+        gfx_c64_render(g->target, mvp, mv, g->mesh[0], g->mesh[1], g->ktex, g->mesh[2], g->btex, noglass ? NULL : g->mesh[3], g->mesh[4], led, g->pts);
         c64d_picture(g->target, px, py, pw, ph);
     }
 

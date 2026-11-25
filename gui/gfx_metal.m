@@ -36,31 +36,41 @@ static NSString *const MSL =
     /* ---------------------------------------------------------------- the 3D C64 of the Info view (the shader of gfx_gl.c in Metal) */
     "struct C6In { float3 pos [[attribute(0)]]; float2 uv [[attribute(1)]]; float4 col [[attribute(2)]]; };\n"
     "struct C6Out { float4 position [[position]]; float3 vv; float3 vp; float2 vuv; float4 vcol; };\n"
-    "struct C6P { float4x4 mvp; float4x4 mv; float4 uled; int umode; int pad[3]; };\n"
+    "struct C6P { float4x4 mvp; float4x4 mv; float4 uled; float4 pts[6]; int umode; int pad[3]; };\n"
     "vertex C6Out vs_c64(C6In in [[stage_in]], constant C6P &p [[buffer(1)]]) {\n"
     "  C6Out o; float4 q = float4(in.pos, 1.0); o.vv = (p.mv * q).xyz; o.vp = in.pos; o.vuv = in.uv; o.vcol = in.col;\n"
     "  float4 gp = p.mvp * q; o.position = float4(gp.x, gp.y, (gp.z + gp.w) * 0.5, gp.w);\n"      /* depth 0..1; rows of a Metal texture run from the top, which is where +y of the clip space is */
     "  return o;\n"
     "}\n"
     "float3 hsv3(float h, float s, float v) { float3 k = clamp(abs(fract(h + float3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0); return v * mix(float3(1.0), k, s); }\n"
+    "float hash2(float2 c) { return fract(sin(dot(c, float2(12.9898, 78.233))) * 43758.5453); }\n"
+    "float3 glow3(float3 q, constant C6P &p) { float3 g = float3(0.0); for (int i = 0; i < 6; i++) { float d = distance(q, p.pts[i].xyz); float a = 1.0 / (1.0 + d * d * 45.0); g += hsv3(p.uled.x + 0.17 * float(i) + 0.05, 0.85, 1.0) * a * a; } return g * p.uled.w; }\n"
     "fragment float4 fs_c64(C6Out in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler smp [[sampler(0)]], constant C6P &p [[buffer(1)]]) {\n"
     "  float3 n = normalize(cross(dfdx(in.vv), dfdy(in.vv))); if (dot(n, -in.vv) < 0.0) n = -n;\n"
     "  float d = max(dot(n, normalize(float3(0.33, 0.52, 0.79))), 0.0);\n"
     "  float sp = 0.65 + 0.35 * sin(in.vp.x * 38.0 + p.uled.x * 40.0) * sin(in.vp.z * 53.0 - p.uled.x * 25.0);\n"
     "  float3 L = hsv3(p.uled.x + in.vp.x * p.uled.y + in.vp.z * 0.18, p.uled.z, 1.0) * p.uled.w;\n"
+    "  float3 G = glow3(in.vp, p);\n"
     "  int m = p.umode;\n"
     "  if (m == 2) {\n"
-    "    float rim = pow(1.0 - abs(dot(n, normalize(-in.vv))), 2.0);\n"
-    "    float3 c = in.vcol.rgb * (0.45 + 0.45 * d) + L * (0.55 + 1.0 * rim);\n"
-    "    float a = clamp(in.vcol.a + 0.45 * rim + 0.12 * p.uled.w, 0.0, 0.95);\n"
+    "    float rim = pow(1.0 - abs(dot(n, normalize(-in.vv))), 3.0);\n"
+    "    float3 rc = hsv3(p.uled.x + in.vp.x * p.uled.y * 1.5 + in.vp.z * 0.3 + 0.1, 1.0, 1.0);\n"
+    "    float3 c = float3(0.86, 0.89, 0.98) * (0.40 + 0.45 * d) + L * 0.30 + rc * rim * p.uled.w * 2.4 + G * 1.4;\n"
+    "    float a = clamp(in.vcol.a * 1.05 + 0.45 * rim + length(G) * 0.25, 0.0, 0.95);\n"
     "    return float4(c * a, a);\n"
     "  } else if (m == 3) {\n"
-    "    float3 lc = hsv3(p.uled.x + in.vp.x * p.uled.y * 2.0 + in.vp.z * 0.5, 0.9, 1.0);\n"
-    "    return float4(mix(in.vcol.rgb, lc, 0.75) * (0.8 + 1.6 * p.uled.w), 1.0);\n"
+    "    float3 lc = hsv3(p.uled.x + in.vp.x * p.uled.y * 2.0 + in.vp.z * 0.5, 0.8, 1.0);\n"
+    "    return float4(mix(in.vcol.rgb, lc, 0.8) * (1.3 + 2.2 * p.uled.w) + float3(0.35), 1.0);\n"
+    "  } else if (m == 1) {\n"
+    "    bool red = in.vcol.r > 0.5;\n"
+    "    float h = hash2(floor(in.vuv * float2(16.0, 4.0)));\n"
+    "    float3 kc = hsv3(p.uled.x + 0.55 * h + in.vp.x * 0.2, 0.85, 1.0);\n"
+    "    float3 base = in.vcol.rgb * (0.35 + 0.9 * d);\n"
+    "    return float4(base + (red ? float3(0.0) : kc * p.uled.w * (0.60 + 0.40 * sp) * (0.50 + 0.50 * d)) + G * 0.5, 1.0);\n"
     "  }\n"
     "  float3 base = m == 4 ? tex.sample(smp, in.vuv).rgb : in.vcol.rgb;\n"
     "  float sh = m == 4 ? 0.62 + 0.55 * d : 0.30 + 0.80 * d;\n"
-    "  return float4(base * sh + L * (m == 1 ? 0.62 * sp : (m == 4 ? 0.30 : 0.30 * sp)), 1.0);\n"
+    "  return float4(base * sh * (m == 4 ? 1.0 : 0.75) + L * (m == 4 ? 0.30 : 0.18 * sp) + G * 0.7, 1.0);\n"
     "}\n";
 
 struct gfx_tex { id<MTLTexture> tex; id<MTLTexture> depth; int w, h; };
@@ -288,11 +298,11 @@ static void window_pass_resume(void) {
     [enc setRenderPipelineState:pso[additive ? 1 : 0]];
     [enc setFragmentSamplerState:sampler atIndex:0];
 }
-void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh *solid, gfx_mesh *keys, gfx_tex *keys_tex, gfx_mesh *badge, gfx_tex *badge_tex, gfx_mesh *glass, gfx_mesh *leds, const float *led) {
+void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh *solid, gfx_mesh *keys, gfx_tex *keys_tex, gfx_mesh *badge, gfx_tex *badge_tex, gfx_mesh *glass, gfx_mesh *leds, const float *led, const float *pts) {
     (void)keys_tex;
     if (!frame_ok || !target || !target->tex || !pso_c64[0] || !pso_c64[1]) return;
-    struct { float mvp[16], mv[16], uled[4]; int umode, pad[3]; } p;
-    memcpy(p.mvp, mvp, sizeof p.mvp); memcpy(p.mv, mv, sizeof p.mv); memcpy(p.uled, led, sizeof p.uled); memset(p.pad, 0, sizeof p.pad);
+    struct { float mvp[16], mv[16], uled[4], pts[24]; int umode, pad[3]; } p;
+    memcpy(p.mvp, mvp, sizeof p.mvp); memcpy(p.mv, mv, sizeof p.mv); memcpy(p.uled, led, sizeof p.uled); memcpy(p.pts, pts, sizeof p.pts); memset(p.pad, 0, sizeof p.pad);
     [enc endEncoding]; enc = nil;
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     rp.colorAttachments[0].texture = target->tex; rp.colorAttachments[0].loadAction = MTLLoadActionClear;

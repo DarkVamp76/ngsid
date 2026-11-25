@@ -16,6 +16,10 @@ from glb import load, acc
 
 Q = 20000.0
 HALF = 0.2
+# the keyboard of the 8580R5 (C64C) model sits too far back: the part with the vents (back) has to be about twice as long, so the keyboard, its plate, the badge and the LEDs move to the front
+SHIFT_Z = {'C64_8580': 0.045}
+MOVES = ('Keys_body', 'Keys_top', 'FKeyPlate', 'Badge', 'LED0', 'LED1', 'LED2', 'LED3')
+SKIP = ('KeyPlate',)                    # the black plate under the keys: the real case has none
 TEX = ((1024, 256), (512, 64))         # the keys picture (2048 x 512) and the badge (about 800 x 110), scaled
 
 
@@ -41,11 +45,15 @@ def bake(path, tag):
     j, b = load(path)
     parts = {k: ([], [], [], []) for k in ('solid', 'keys', 'badge', 'glass', 'led')}      # positions, uvs, colours, indices
     base = {k: 0 for k in parts}
+    ledpts = []                                                      # the centres of the LED parts (model units): light points for the glow
     fk = [acc(j, b, j['meshes'][n['mesh']]['primitives'][0]['attributes']['POSITION'])[0] for n in j['nodes'] if n.get('name') == 'FKeyPlate']
     FK_X = float(fk[0][:, 0].min()) - 0.003 if fk else 9.0          # keys right of this x are the four function keys (red)
     for n in j['nodes']:
+        if n.get('name') in SKIP: continue
         pr = j['meshes'][n['mesh']]['primitives'][0]
         p, _ = acc(j, b, pr['attributes']['POSITION'])
+        if n.get('name') in MOVES and SHIFT_Z.get(tag):
+            p = p.copy(); p[:, 2] += SHIFT_Z[tag]
         idx, _ = acc(j, b, pr['indices'])
         mat = j['materials'][pr['material']]
         pb = mat['pbrMetallicRoughness']
@@ -60,6 +68,7 @@ def bake(path, tag):
             if n.get('name', '') in ('PowerLED', 'GreenLED') or n.get('name', '').startswith('LED'): kind = 'led'
             if kind == 'glass': col[3] = 128                      # every case is equally milky (alpha 0.5)
             uv = np.zeros((len(p), 2), dtype=np.float32)
+        if kind == 'led': ledpts.append(p.astype(np.float64).mean(axis=0))
         P, U, C, I = parts[kind]
         cols = np.tile(np.array(col, dtype=np.uint8), (len(p), 1))
         if n.get('name') in ('Keys_top', 'Keys_body'):                # 3D keys without a picture: dark caps, the function keys red
@@ -89,6 +98,9 @@ def bake(path, tag):
         out += arr('%s_%s_idx' % (tag.lower(), k), 'uint16_t', idx)
         out += '#define %s_%s_NV %d\n#define %s_%s_NI %d\n' % (tag, k.upper(), len(pos), tag, k.upper(), len(idx))
         sizes.append((len(pos), len(idx)))
+    lp = [((q - centre) / HALF) for q in ledpts][:6]
+    while len(lp) < 6: lp.append(np.array([0.0, -9.0, 0.0]))        # unused points far away
+    out += arr('%s_ledpts' % tag.lower(), 'int16_t', np.clip(np.round(np.array(lp) * Q), -32767, 32767).astype(np.int16).flatten())
     for i, name in enumerate(('KEYS', 'BADGE')):
         im = j['images'][i]; bv = j['bufferViews'][im['bufferView']]
         img = Image.open(io.BytesIO(b[bv.get('byteOffset', 0):bv.get('byteOffset', 0) + bv['byteLength']])).convert('RGB')

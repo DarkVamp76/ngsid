@@ -67,6 +67,10 @@ int ios_launched_in_background(void);                                         /*
 int ios_is_testflight(void);                                                   /* ios_glue.m: a TestFlight build (not the App Store): the frame rate is shown */
 int ios_app_active(void);                                                        /* ios_glue.m: the app is in the foreground */
 void ios_media_set_cover(const unsigned char *px, int w, int h);                 /* the cover for the lock screen: RGBA, opaque, top row first; NULL = none */
+int ios_carplay_connected(void);                                                  /* ios_glue.m: a CarPlay screen is connected */
+int ios_media_set_cover_info(int model, const char *title, const char *rows);     /* ios_glue.m: the CarPlay cover: the C64 of the model (0 = 6581, 1 = 8580) turning in 24 pictures on top, the title and the rows "LABEL<TAB>value" below; 0 = no pictures (the caller sets the flat cover) */
+int ios_media_take_rel(char *buf, int cap);                                       /* ios_glue.m: the HVSC path a CarPlay tap wants to play (command 7); 1 = there is one */
+void ios_media_fav(int on);                                                       /* ios_glue.m: the playing tune is a favorite (the star button of CarPlay) */
 void ios_audio_longform(void);                                                    /* AirPlay 2 (HomePod) needs the long-form route sharing policy */
 void ios_airplay_place(SDL_Window *win, float x, float y, float size, int visible);   /* the native AirPlay button over the window (points) */
 float ios_output_latency_ms(void);                                                /* latency of the output route in ms (AirPlay: ~2000) */
@@ -739,6 +743,7 @@ static void job_start(int kind, const char *path) {
     else { SDL_AtomicSet(&job.state, 0); snprintf(br_msg, sizeof br_msg, "Thread error"); }
 }
 
+static char cp_pending[768];                 /* a tune chosen on CarPlay: its folder is listed first (so that next / previous step through that folder), then the tune is fetched and played */
 static int browse_cur_row(void) {
     if (cur < 0 || cur >= npl || !pl[cur].rel) return -1;
     size_t rl = strlen(rpath);
@@ -752,8 +757,10 @@ static int browse_cur_row(void) {
 
 static void job_poll(void) {
     if (SDL_AtomicGet(&job.state) != 2) return;
+    int chain = 0;
     if (job.rc == 0) {
         if (job.kind == 0) {
+            chain = cp_pending[0] != 0;
             free(be);
             be = job.res;
             nbe = job.nres;
@@ -777,8 +784,10 @@ static void job_poll(void) {
     } else {
         free(job.res);
         snprintf(br_msg, sizeof br_msg, "%s", job.rc == HVSC_ERR_NOCURL ? "curl not found" : "HVSC unreachable");
+        cp_pending[0] = 0;
     }
     SDL_AtomicSet(&job.state, 0);
+    if (chain) { char pf[768]; snprintf(pf, sizeof pf, "%s", cp_pending); cp_pending[0] = 0; job_start(1, pf); }
 }
 
 static void browse_open(void) {
@@ -2661,6 +2670,30 @@ static void save_screenshot(const char *file, int w, int h) {
     free(px); free(fl);
 }
 
+/* test tool for the CarPlay cover of the iOS app (NGSID_TEST_C64FRAMES="model,n,dir": model 0 = 6581R4, 1 = 8580R5): picture number i of n of the 3D C64 turning once around, in the top half
+ * (600 x 300) of a 600 x 600 cover on a dark glow; drawn over the top left corner of the window (it must be at least 600 x 600) and written as dir/card-<model + 1>-<i>.bmp */
+static void c64_frame_dump(int mi, int i, int n, int dw, int dh, const char *dir) {
+    C64Gl *g = &c64gl[mi];
+    c64d_setup(mi);
+    if (g->ready <= 0 || dw < 600 || dh < 600) return;
+    gfx_set_params((float)dw, (float)dh, 1.0f); gfx_set_texture(fonttex); set_additive(0);
+    rect_grad(0, 0, 600, 600, mix(BG0, C(0.20f, 0.45f, 0.90f, 1), 0.32f), BG0);
+    float mvp[16], mv[16], led[4] = { 0.58f, 0.30f, 0.88f, 0.55f };
+    c64d_matrices(6.2831853f * (float)i / (float)n, 0.62f, 0.70f, (float)C64_TW / (float)C64_TH, C64_YSC[mi], mvp, mv);
+    flush();
+    gfx_c64_render(g->target, mvp, mv, g->mesh[0], g->mesh[1], g->ktex, g->mesh[2], g->btex, g->mesh[3], g->mesh[4], led, g->pts);
+    c64d_picture(g->target, 20, 0, 560, 300);
+    flush();
+    uint8_t *px = (uint8_t *)malloc((size_t)dw * (size_t)dh * 4), *fl = (uint8_t *)malloc(600 * 600 * 4);
+    if (!px || !fl) { free(px); free(fl); return; }
+    gfx_read_pixels(dw, dh, px);
+    for (int y = 0; y < 600; y++) memcpy(fl + (size_t)y * 600 * 4, px + (size_t)(dh - 1 - y) * (size_t)dw * 4, 600 * 4);
+    char path[600]; snprintf(path, sizeof path, "%s/card-%d-%02d.bmp", dir, mi + 1, i);
+    SDL_Surface *sf = SDL_CreateRGBSurfaceFrom(fl, 600, 600, 32, 600 * 4, 0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
+    if (sf) { SDL_SaveBMP(sf, path); SDL_FreeSurface(sf); }
+    free(px); free(fl);
+}
+
 
 /* ---------------------------------------------------------------- main loop (a function so it can also run in the browser) */
 #ifdef __EMSCRIPTEN__
@@ -2838,13 +2871,33 @@ static void tv_press_toggle(void) {
     if (!g_paused && (!g_dev || SDL_GetAudioDeviceStatus(g_dev) != SDL_AUDIO_PLAYING)) audio_recover();
 }
 #endif
+/* the CarPlay cover: the title and the rows of the Info view ("LABEL<TAB>value"; a line without label is an extra line) */
+static void cp_info_rows(char *title, size_t tcap, char *rows, size_t rcap) {
+    const tune_t *tn = g_tune;
+    title[0] = rows[0] = 0;
+    if (!tn) return;
+    snprintf(title, tcap, "%s", tn->info.name[0] ? tn->info.name : (cur >= 0 && cur < npl ? pl[cur].label : "ngSid"));
+    char chips[120] = "", b2[40];
+    for (int i = 0; i < tn->nsid && i < 3; i++) { snprintf(b2, sizeof b2, "%s%s", i ? " + " : "", c64d_chip(tn->model[i])); strncat(chips, b2, sizeof chips - strlen(chips) - 1); }
+    int n = snprintf(rows, rcap, "AUTHOR\t%s\nRELEASED\t%s\nSID CHIP\t%s\nSONGS\t%d  (playing %d)\nFORMAT\t%s v%d, %s\n",
+        tn->info.author[0] ? tn->info.author : "-", tn->info.released[0] ? tn->info.released : "-", chips[0] ? chips : c64d_chip(6581),
+        tn->info.songs, tn->song, tn->info.rsid ? "RSID" : "PSID", tn->info.version, tn->pal ? "PAL" : "NTSC");
+    if (n > 0 && (size_t)n < rcap && cur >= 0 && cur < npl && pl[cur].rel) snprintf(rows + n, rcap - (size_t)n, "\t%s\n", pl[cur].rel);
+}
 static void ios_media_sync(void) {
     audio_watch();
     if (g_launch_bg && ios_app_active()) { g_launch_bg = 0; ios_start_idle(); }        /* the user opened the app: now it may start */
-    {   static int cover_idx = -1;
-        int idx = g_tune && g_tune->model[0] == 8580 ? 1 : 0;
-        if (g_tune && idx != cover_idx) { cover_idx = idx; ios_cover_set(idx); }
+    {   static int cover_idx = -1, was_cp; static char sig[1500];
+        int idx = g_tune && g_tune->model[0] == 8580 ? 1 : 0, cp = ios_carplay_connected();
+        if (cp) {        /* CarPlay: the turning C64 with the information of the Info view (set again when the tune, the song or the favorite changes) */
+            char title[160], rows[1100], now[1500];
+            cp_info_rows(title, sizeof title, rows, sizeof rows);
+            snprintf(now, sizeof now, "%d|%s|%s", idx, title, rows);
+            if (g_tune && (!was_cp || strcmp(now, sig))) { snprintf(sig, sizeof sig, "%s", now); if (!ios_media_set_cover_info(idx, title, rows)) ios_cover_set(idx); }
+        } else if (g_tune && (idx != cover_idx || was_cp)) { cover_idx = idx; ios_cover_set(idx); }
+        was_cp = cp;
     }
+    ios_media_fav(fav_cur() >= 0);
     int c; while ((c = ios_media_poll()) >= 0) {
 #if defined(__APPLE__) && TARGET_OS_TV
         if (c == 0 || c == 1) { tv_press_toggle(); continue; }      /* play / pause / toggle of the Apple TV remote: one toggle per press */
@@ -2853,6 +2906,14 @@ static void ios_media_sync(void) {
         else if (c == 1) g_paused = 1;
         else if (c == 2) step_tune(1);
         else if (c == 3) step_tune(-1);
+        else if (c == 7) {                                       /* CarPlay: a tune of the HVSC browser */
+            char rel[768]; if (!ios_media_take_rel(rel, sizeof rel) || !rel[0] || SDL_AtomicGet(&job.state)) continue;
+            char fo[768]; snprintf(fo, sizeof fo, "%s", rel); char *sl = strrchr(fo, '/'); if (sl) sl[1] = 0; else fo[0] = 0;
+            browse = 1; fav_mode = 0;
+            if (nbe && !strcmp(fo, rpath)) job_start(1, rel);
+            else { snprintf(cp_pending, sizeof cp_pending, "%s", rel); job_start(0, fo); }
+        }
+        else if (c == 8) { if (cur >= 0 && cur < npl && pl[cur].rel) fav_toggle(pl[cur].rel); }      /* CarPlay: the star button */
     }
     static char mt[160], ma[96], mb[96]; static int mp = -1; static Uint32 mt0;
     char title[160] = "ngSid", artist[96] = "", album[96] = "";
@@ -3231,6 +3292,11 @@ static void iter(void) {
         draw_ctx_menu(dt);
         set_additive(0);
         flush();
+        {   /* test tool: the pictures of the turning C64 for the CarPlay cover, one per frame after the first 8 (see c64_frame_dump) */
+            static int cfm = -2, cfn, cfr; static char cfd[400];
+            if (cfm == -2) { const char *e = getenv("NGSID_TEST_C64FRAMES"); cfm = (e && sscanf(e, "%d,%d,%399s", &cfm, &cfn, cfd) == 3 && cfn > 0) ? cfm : -1; }
+            if (cfm >= 0 && ++cfr > 8) { if (cfr - 9 < cfn) c64_frame_dump(cfm ? 1 : 0, cfr - 9, cfn, dw, dh, cfd); else running = 0; }
+        }
         if (shot && ++frame >= shot_frames) {
             save_screenshot(shot, dw, dh);
             running = 0;

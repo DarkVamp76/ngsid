@@ -10,7 +10,7 @@ typedef struct { C64Part p[5]; const uint16_t *ktex, *btex; int ktw, kth, btw, b
 static const C64Model C64D[2] = { C64M(C64_6581, c64_6581), C64M(C64_8580, c64_8580) };
 
 typedef struct { gfx_mesh *mesh[5]; gfx_tex *ktex, *btex, *target, *target2; int ready; } C64Gl;
-static const float C64_YSC[2] = { 1.10f, 1.70f };      /* height of the model: 6581 breadbin file 7.2 cm (real 7 to 8 cm), the 8580 C64C file only 3.8 cm (real 5.7 to 7 cm) */
+static const float C64_YSC[2] = { 1.00f, 1.50f };      /* height of the model: 6581 breadbin file 7.2 cm (real 7 to 8 cm), the 8580 C64C file only 3.8 cm (real 5.7 to 7 cm) */
 static C64Gl c64gl[2];
 #define C64_TW 1100
 #define C64_TH 640
@@ -56,7 +56,7 @@ static void c64d_matrices(float ang, float tilt, float fit, float aspect, float 
     float ca = cosf(ang), sa = sinf(ang), ct = cosf(tilt), st = sinf(tilt);
     float M[16] = { ca, st * sa, -ct * sa, 0,   0, ct * ysc, st * ysc, 0,   sa, -st * ca, ct * ca, 0,   0, -0.12f, -D, 1 };
     for (int i = 0; i < 16; i++) mv[i] = M[i];
-    float fx = fit * D, fy = fit * D / aspect;
+    float fx = fit * D, fy = fit * D * aspect;                 /* aspect = width / height of the picture: the same number of pixels per unit across and up */
     float P[16] = { fx, 0, 0, 0,  0, fy, 0, 0,  0, 0, -(zf + zn) / (zf - zn), -1,  0, 0, -2 * zf * zn / (zf - zn), 0 };
     for (int c = 0; c < 4; c++) for (int r = 0; r < 4; r++) { float s = 0; for (int k = 0; k < 4; k++) s += P[k * 4 + r] * M[c * 4 + k]; mvp[c * 4 + r] = s; }
 }
@@ -108,7 +108,7 @@ static int c64d_header(int mi, float cx, float cy, float w, float h, float dtf) 
     if (g->ready <= 0) return 0;
     c64d_light(dtf);
     float mvp[16], mv[16], led[4] = { c64d_hue + c64d_drift, 0.30f, 0.88f, c64d_glow };
-    c64d_matrices(c64d_t * 0.9f, 0.55f, 0.92f, 440.0f / 256.0f, C64_YSC[mi], mvp, mv);
+    c64d_matrices(c64d_t * 0.9f, 0.50f, 0.80f, 440.0f / 256.0f, C64_YSC[mi], mvp, mv);
     flush();
     gfx_c64_render(g->target2, mvp, mv, g->mesh[0], g->mesh[1], g->ktex, g->mesh[2], g->btex, g->mesh[3], g->mesh[4], led);
     float vt = gfx_target_v_flipped() ? 1.0f : 0.0f, vb = 1.0f - vt, bh = h, bw = h * 440.0f / 256.0f;
@@ -137,10 +137,10 @@ static void draw_info(float x, float y, float w, float h, float dtf) {
     C64Gl *g = &c64gl[mi];
     c64d_setup(mi);
     if (g->ready > 0) {
-        float ang = t * 0.6f, tilt = 0.80f + 0.06f * sinf(t * 0.37f), mvp[16], mv[16];                  /* turns all the way round */
+        float ang = t * 0.6f, tilt = 0.62f + 0.05f * sinf(t * 0.37f), mvp[16], mv[16];                  /* turns all the way round */
         int noglass = 0;
         { const char *tc = getenv("NGSID_TEST_C64"); int ta, tt, tg; if (tc && sscanf(tc, "%d:%d:%d", &ta, &tt, &tg) == 3) { ang = (float)ta / 1000.0f; tilt = (float)tt / 1000.0f; noglass = tg; } }      /* test hook: angle:tilt (thousandths of a radian):no glass (whole numbers: a German locale does not read 0.5) */
-        c64d_matrices(ang, tilt, 0.86f, (float)C64_TW / (float)C64_TH, C64_YSC[mi], mvp, mv);
+        c64d_matrices(ang, tilt, 0.68f, (float)C64_TW / (float)C64_TH, C64_YSC[mi], mvp, mv);
         float led[4] = { hue + drift, 0.30f, 0.88f, glow };
         flush();
         gfx_c64_render(g->target, mvp, mv, g->mesh[0], g->mesh[1], g->ktex, g->mesh[2], g->btex, noglass ? NULL : g->mesh[3], g->mesh[4], led);

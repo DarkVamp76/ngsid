@@ -133,8 +133,9 @@ static void draw_info(float x, float y, float w, float h, float dtf) {
     float t = c64d_t, hue = c64d_hue, drift = c64d_drift, glow = c64d_glow;
 
     /* the picture on the left */
-    float bw = w * 0.5f; if (bw > 640) bw = 640;
-    float px = x + 8, py = y + 26, pw = bw, ph = h - 34;
+    const int narrow = w < 520;                                      /* upright phone: the picture on top (the full width), the table below it (the full width too) */
+    float bw = narrow ? w - 16 : w * 0.5f; if (bw > 640) bw = 640;
+    float px = x + 8, py = y + 26, pw = bw, ph = narrow ? fminf(h * 0.30f, 150.0f) : h - 34;
     C64Gl *g = &c64gl[mi];
     c64d_setup(mi);
     if (g->ready > 0) {
@@ -149,12 +150,12 @@ static void draw_info(float x, float y, float w, float h, float dtf) {
     }
 
     /* the table on the right */
-    float rx = x + bw + 14, rw = w - bw - 14 - 24;
+    float rx = narrow ? x + 18 : x + bw + 14, rw = narrow ? w - 36 : w - bw - 14 - 24;
     char b[260], b2[80];
     int rows = 9 + (tn->info.sid2 ? 1 : 0) + (cur >= 0 && cur < npl && pl[cur].rel ? 1 : 0);
-    float k = (h - 52) / ((float)rows * 28.0f + 60.0f); if (k > 1.25f) k = 1.25f; if (k < 0.6f) k = 0.6f;
+    float k = ((narrow ? h - 26 - ph - 12 : h - 52)) / ((float)rows * 28.0f + 60.0f); if (k > 1.25f) k = 1.25f; if (k < 0.6f) k = 0.6f;
     float need = 40 * k + 12 * k + rows * 28 * k;
-    float ty = y + (h - need) / 2; if (ty < y + 26) ty = y + 26;
+    float ty = narrow ? py + ph + 8 : y + (h - need) / 2; if (ty < y + 26) ty = y + 26;
     snprintf(b, sizeof b, "%s", tn->info.name[0] ? tn->info.name : (cur >= 0 ? pl[cur].label : ""));
     fit_text(b, rw, 26 * k);
     text(rx, ty, 26 * k, TXT, b);

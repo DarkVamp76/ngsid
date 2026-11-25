@@ -178,7 +178,23 @@ static void draw_info(float x, float y, float w, float h, float dtf) {
         if (tn->info.sid3) { snprintf(b2, sizeof b2, "   SID 3 $%04X", tn->info.sid3); strncat(b, b2, sizeof b - strlen(b) - 1); }
         ty = c64d_row(rx, ty, rw, k, "MORE SIDS", b, TXT);
     }
-    if (cur >= 0 && cur < npl && pl[cur].rel) ty = c64d_row(rx, ty, rw, k, "HVSC", pl[cur].rel, DIM);
+    if (cur >= 0 && cur < npl && pl[cur].rel) {
+#if defined(__APPLE__) && TARGET_OS_TV
+        ty = c64d_row(rx, ty, rw, k, "HVSC", pl[cur].rel, DIM);                   /* the Apple TV has no pointer */
+#else
+        /* the HVSC path is a link: the tune on DeepSID (the same page as Info in the list menu) */
+        float vx = rx + 108 * k, vs = 16 * k;
+        char v[200]; snprintf(v, sizeof v, "%s", pl[cur].rel);
+        fit_text(v, rw - 108 * k, vs);
+        float tw = text_width(v, vs);
+        int hv = hit(vx - 4, ty - 3, tw + 8, vs + 8);
+        text(rx, ty + 3 * k, 12 * k, FAINT, "HVSC");
+        text(vx, ty, vs, hv ? TXT : VC[0], v);
+        rect(vx, ty + vs + 2, tw, 1, alpha(hv ? TXT : VC[0], 0.7f));
+        if (clicked(vx - 4, ty - 3, tw + 8, vs + 8)) { open_deepsid(pl[cur].rel); click = 0; }
+        ty += 28 * k;
+#endif
+    }
     snprintf(b, sizeof b, "%zu bytes", tn->len);
     ty = c64d_row(rx, ty, rw, k, "SIZE", b, DIM);
 }

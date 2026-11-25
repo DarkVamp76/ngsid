@@ -1530,7 +1530,7 @@ static void draw_digi(float x, float y, float w, float h, const vis_t *vs) {
 }
 
 static int g_portrait, g_plopen;      /* portrait (phones): stacked layout, playlist/browser as overlay */
-static int g_orb;                       /* 0 = voice cards, 1 = orb, 2 = notes (key V / switch in the filter strip) */
+static int g_orb;                       /* 0 = voice cards, 1 = orb, 2 = notes, 3 = info (key V / switch in the filter strip) */
 static float orb_bs[NBANDS];
 
 /* ================================================================== Orb: geodesic net, deformed by the spectrum
@@ -1592,6 +1592,7 @@ static void ob_init(void) {
         }
 }
 
+#include "c64.inc"
 static void draw_orb(float x, float y, float w, float h, float dtf) {
     static int init;
     static float t, spin;
@@ -2108,6 +2109,7 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
         /* ---------------- voices + digi, or the orb */
         if (g_orb == 1) draw_orb(M, cy0, aw, midh, (float)dt);
         else if (g_orb == 2) draw_notes(M, cy0, aw, midh, vs, (float)dt);
+        else if (g_orb == 3) draw_info(M, cy0, aw, midh, (float)dt);
         else {
             float dh = NG_TV ? 52.0f : 64.0f;
             int rows = nsid == 1 && !NG_TV ? 3 : nsid;
@@ -2151,9 +2153,9 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
             cx += chip(cx, cy, "LP", VC[0], (mode & 0x10) != 0);
             cx += chip(cx, cy, "BP", VC[0], (mode & 0x20) != 0);
             cx += chip(cx, cy, "HP", VC[0], (mode & 0x40) != 0);
-            float sw = 62, sx0 = M + aw - 14 - 3 * sw;
-            static const char *const SL[3] = { "VOICES", "NOTES", "ORB" }; static const int SV[3] = { 0, 2, 1 };
-            for (int i = 0; i < 3; i++) {
+            float sw = 52, sx0 = M + aw - 14 - 4 * sw;
+            static const char *const SL[4] = { "VOICES", "NOTES", "ORB", "INFO" }; static const int SV[4] = { 0, 2, 1, 3 };
+            for (int i = 0; i < 4; i++) {
                 float xx = sx0 + i * sw;
                 int on = g_orb == SV[i], hv = hit(xx, cy - 2, sw - 4, 20);
                 rrect(xx, cy - 2, sw - 4, 20, 6, on ? alpha(VC[2], 0.25f) : alpha(FAINT, hv ? 0.30f : 0.16f));
@@ -2456,7 +2458,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
             float ccx = ax + 22 + tw + 12 + c64bb / 2, ccy = hy + hh / 2 - 1;
             int hv = c64_hit(mx, my, ccx, ccy, c64w, c64h, c64ang);
             float grow = hv ? 1.08f : 1.0f;
-            draw_c64(c64i, ccx, ccy, c64w * grow, c64h * grow, c64ang, 1.0f);
+            if (!c64d_header(c64i, ccx, ccy, c64w * grow * 1.5f, c64h * grow * 1.5f, (float)dt)) draw_c64(c64i, ccx, ccy, c64w * grow, c64h * grow, c64ang, 1.0f);      /* the 3D one turns all the way round */
             if (click && c64_hit((float)clickx, (float)clicky, ccx, ccy, c64w, c64h, c64ang)) { open_url("https://commodore.net/computer/"); click = 0; }
         }
         text(ax + 22, hy + 14, tsize, TXT, title);
@@ -2551,6 +2553,7 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
     float dy = vy + vh + M, dh = 96;
     if (g_orb == 1) draw_orb(ax, vy, aw, dy + dh - vy, (float)dt);
     else if (g_orb == 2) draw_notes(ax, vy, aw, dy + dh - vy, vs, (float)dt);
+    else if (g_orb == 3) draw_info(ax, vy, aw, dy + dh - vy, (float)dt);
     else draw_digi(ax, dy, aw, dh, vs);
     if (!g_orb && clicked(ax, dy, aw, dh)) { int ds = digi_source(vs); g_mute ^= ds >= 0 ? 1u << ds : 8u; apply_mute(); click = 0; }
 
@@ -2580,9 +2583,9 @@ static void draw_ui(const vis_t *vs, double t, double dt) {
         cx += 50;
         for (int v = 0; v < 3; v++) { snprintf(b, sizeof b, "V%d", v + 1); cx += chip(cx, cy, b, VC[v], (route >> v & 1) != 0); }
         {   /* VOICES | ORB switch (also for touch) */
-            float sw = 62, sx0 = ax + aw - 18 - 130 - 3 * sw;
-            static const char *const SL[3] = { "VOICES", "NOTES", "ORB" }; static const int SV[3] = { 0, 2, 1 };
-            for (int i = 0; i < 3; i++) {
+            float sw = 54, sx0 = ax + aw - 18 - 130 - 4 * sw;
+            static const char *const SL[4] = { "VOICES", "NOTES", "ORB", "INFO" }; static const int SV[4] = { 0, 2, 1, 3 };
+            for (int i = 0; i < 4; i++) {
                 float xx = sx0 + i * sw;
                 int on = g_orb == SV[i], hv = hit(xx, cy - 2, sw - 4, 20);
                 rrect(xx, cy - 2, sw - 4, 20, 6, on ? alpha(VC[2], 0.25f) : alpha(FAINT, hv ? 0.30f : 0.16f));
@@ -3064,8 +3067,8 @@ static void iter(void) {
                     break;
 #if defined(__APPLE__) && TARGET_OS_TV
                 case SDLK_LEFT: case SDLK_RIGHT: {   /* Apple TV: left / right switch the view (voices, notes, orb); the tunes of a multi-tune file are not on the remote */
-                    static const int order[3] = { 0, 2, 1 }; int pos = g_orb == 2 ? 1 : (g_orb == 1 ? 2 : 0);
-                    pos = (pos + (e.key.keysym.sym == SDLK_RIGHT ? 1 : 2)) % 3; g_orb = order[pos]; break; }
+                    static const int order[4] = { 0, 2, 1, 3 }; int pos = g_orb == 2 ? 1 : (g_orb == 1 ? 2 : (g_orb == 3 ? 3 : 0));
+                    pos = (pos + (e.key.keysym.sym == SDLK_RIGHT ? 1 : 3)) % 4; g_orb = order[pos]; break; }
 #else
                 case SDLK_LEFT: change_song(-1); break;
                 case SDLK_RIGHT: change_song(1); break;
@@ -3079,7 +3082,7 @@ static void iter(void) {
                 case SDLK_RETURN: case SDLK_KP_ENTER: if (browse) browse_activate(br_sel); break;
                 case SDLK_b: if (browse) browse = 0; else browse_open(); fav_mode = 0; break;
                 case SDLK_h: if (cur >= 0 && cur < npl && pl[cur].rel) fav_toggle(pl[cur].rel); break;    /* favorite on / off for the tune that plays */
-                case SDLK_v: g_orb = g_orb == 0 ? 2 : (g_orb == 2 ? 1 : 0); break;      /* voices -> notes -> orb */
+                case SDLK_v: g_orb = g_orb == 0 ? 2 : (g_orb == 2 ? 1 : (g_orb == 1 ? 3 : 0)); break;      /* voices -> notes -> orb -> info */
                 case SDLK_BACKSPACE: if (browse) browse_up(); break;
                 case SDLK_r: if (cur >= 0) play_index(cur, cur_song); break;
                 case SDLK_1: case SDLK_2: case SDLK_3: case SDLK_4:
@@ -3359,6 +3362,7 @@ int main(int argc, char **argv) {
     if (getenv("NGSID_TEST_BROWSE")) { browse = 1; fav_mode = 0; job_start(0, getenv("NGSID_TEST_BROWSE")); }     /* test hook: start in the HVSC browser, in this folder (e.g. MUSICIANS/H/Hubbard_Rob/) */
     if (getenv("NGSID_TEST_ORB")) g_orb = 1;                        /* test hook: start with the orb instead of the voices */
     if (getenv("NGSID_TEST_NOTES")) g_orb = 2;                      /* test hook: start with the notes */
+    if (getenv("NGSID_TEST_INFO")) g_orb = 3;                       /* test hook: start with the info view */
     if (getenv("NGSID_TEST_TOGGLE")) fav_toggle(getenv("NGSID_TEST_TOGGLE"));   /* test hook: favorite on / off for this HVSC path at the start */
     if (getenv("NGSID_TEST_CTX") && nfav) { snprintf(ctx_rel, sizeof ctx_rel, "%s", fav[atoi(getenv("NGSID_TEST_CTX")) % nfav].rel); ctx_on = 1; ctx_x = 60; ctx_y = 60; }   /* test hook: the open context menu */
     fav_last_load();

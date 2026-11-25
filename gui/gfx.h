@@ -8,6 +8,7 @@
 #define GFX_H
 
 #include <SDL2/SDL.h>
+#include <stdint.h>
 
 /* one vertex: position (pixels), uv, colour, and 4 parameters (the mode m selects the look in the shader, p1..p3 are its parameters) */
 typedef struct { float x, y, u, v, r, g, b, a, m, p1, p2, p3; } gfx_vtx;
@@ -35,5 +36,14 @@ int    gfx_refresh_hz(SDL_Window *win);                 /* refresh rate of the s
 void   gfx_set_render_scale(float s);                  /* Apple TV: render at this fraction of the native size (1 = native); elsewhere without effect */
 float  gfx_last_gpu_ms(void);                          /* how long the GPU needed for the last finished frame (Metal; 0 where it is not known) */
 void   gfx_read_pixels(int w, int h, unsigned char *rgba);   /* the frame buffer as RGBA, bottom row first (like glReadPixels) */
+
+/* ---- the 3D C64 of the Info view (gui/c64.inc): a picture rendered off screen with a depth buffer, shown afterwards like any texture ---- */
+typedef struct gfx_mesh gfx_mesh;                     /* an indexed triangle mesh (opaque) */
+typedef struct { float x, y, z, u, v; unsigned char r, g, b, a; } gfx_v3;      /* one vertex of a mesh: position, uv, colour (24 bytes) */
+gfx_mesh *gfx_mesh_create(const gfx_v3 *verts, int nverts, const uint16_t *idx, int nidx);
+gfx_tex *gfx_target_create(int w, int h);             /* an RGBA render target with a depth buffer (mip chain made after every pass); usable as a texture */
+int      gfx_target_v_flipped(void);                  /* 1: a picture drawn into a target has to be sampled with 1 - v (OpenGL); 0: with v (Metal) */
+/* draws the C64: solid (colour per vertex), keys and badge (textured), the LEDs (bright, coloured by the light), glass (alpha, blended last); led = hue (0..1), spread (hue change across the case), saturation, strength of the light inside; pts = 6 x (x, y, z, 0): the places of the LEDs, which glow into the case */
+void     gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh *solid, gfx_mesh *keys, gfx_tex *keys_tex, gfx_mesh *badge, gfx_tex *badge_tex, gfx_mesh *glass, gfx_mesh *leds, const float *led, const float *pts);
 
 #endif

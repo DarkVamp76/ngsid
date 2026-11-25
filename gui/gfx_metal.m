@@ -32,9 +32,49 @@ static NSString *const MSL =
     "  else if (m == 5) { float d = sdbox(in.uv, in.par.yz, in.par.w); float a = clamp(1.0 - d / in.par.w, 0.0, 1.0); o = float4(in.col.rgb, in.col.a * a * a); }\n"
     "  else { o = float4(in.col.rgb, in.col.a * exp(-dot(in.uv, in.uv) / (2.0 * in.par.y * in.par.y))); }\n"
     "  return o;\n"
+    "}\n"
+    /* ---------------------------------------------------------------- the 3D C64 of the Info view (the shader of gfx_gl.c in Metal) */
+    "struct C6In { float3 pos [[attribute(0)]]; float2 uv [[attribute(1)]]; float4 col [[attribute(2)]]; };\n"
+    "struct C6Out { float4 position [[position]]; float3 vv; float3 vp; float2 vuv; float4 vcol; };\n"
+    "struct C6P { float4x4 mvp; float4x4 mv; float4 uled; float4 pts[6]; int umode; int pad[3]; };\n"
+    "vertex C6Out vs_c64(C6In in [[stage_in]], constant C6P &p [[buffer(1)]]) {\n"
+    "  C6Out o; float4 q = float4(in.pos, 1.0); o.vv = (p.mv * q).xyz; o.vp = in.pos; o.vuv = in.uv; o.vcol = in.col;\n"
+    "  float4 gp = p.mvp * q; o.position = float4(gp.x, gp.y, (gp.z + gp.w) * 0.5, gp.w);\n"      /* depth 0..1; rows of a Metal texture run from the top, which is where +y of the clip space is */
+    "  return o;\n"
+    "}\n"
+    "float3 hsv3(float h, float s, float v) { float3 k = clamp(abs(fract(h + float3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0); return v * mix(float3(1.0), k, s); }\n"
+    "float hash2(float2 c) { return fract(sin(dot(c, float2(12.9898, 78.233))) * 43758.5453); }\n"
+    "float3 glow3(float3 q, constant C6P &p) { float3 g = float3(0.0); for (int i = 0; i < 6; i++) { float d = distance(q, p.pts[i].xyz); float a = 1.0 / (1.0 + d * d * 45.0); g += hsv3(p.uled.x + 0.17 * float(i) + 0.05, 0.85, 1.0) * a * a; } return g * p.uled.w; }\n"
+    "fragment float4 fs_c64(C6Out in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler smp [[sampler(0)]], constant C6P &p [[buffer(1)]]) {\n"
+    "  float3 n = normalize(cross(dfdx(in.vv), dfdy(in.vv))); if (dot(n, -in.vv) < 0.0) n = -n;\n"
+    "  float d = max(dot(n, normalize(float3(0.33, 0.52, 0.79))), 0.0);\n"
+    "  float sp = 0.65 + 0.35 * sin(in.vp.x * 38.0 + p.uled.x * 40.0) * sin(in.vp.z * 53.0 - p.uled.x * 25.0);\n"
+    "  float3 L = hsv3(p.uled.x + in.vp.x * p.uled.y + in.vp.z * 0.18, p.uled.z, 1.0) * p.uled.w;\n"
+    "  float3 G = glow3(in.vp, p);\n"
+    "  int m = p.umode;\n"
+    "  if (m == 2) {\n"
+    "    float rim = pow(1.0 - abs(dot(n, normalize(-in.vv))), 3.0);\n"
+    "    float3 rc = hsv3(p.uled.x + in.vp.x * p.uled.y * 1.5 + in.vp.z * 0.3 + 0.1, 1.0, 1.0);\n"
+    "    float3 c = float3(0.86, 0.89, 0.98) * (0.40 + 0.45 * d) + L * 0.30 + rc * rim * p.uled.w * 2.4 + G * 1.4;\n"
+    "    float a = clamp(in.vcol.a * 1.05 + 0.45 * rim + length(G) * 0.25, 0.0, 0.95);\n"
+    "    return float4(c * a, a);\n"
+    "  } else if (m == 3) {\n"
+    "    float3 lc = hsv3(p.uled.x + in.vp.x * p.uled.y * 2.0 + in.vp.z * 0.5, 0.8, 1.0);\n"
+    "    return float4(mix(in.vcol.rgb, lc, 0.8) * (1.3 + 2.2 * p.uled.w) + float3(0.35), 1.0);\n"
+    "  } else if (m == 1) {\n"
+    "    bool red = in.vcol.r > 0.5;\n"
+    "    float h = hash2(floor(in.vuv * float2(16.0, 4.0)));\n"
+    "    float3 kc = hsv3(p.uled.x + 0.55 * h + in.vp.x * 0.2, 0.85, 1.0);\n"
+    "    float3 base = in.vcol.rgb * (0.35 + 0.9 * d);\n"
+    "    return float4(base + (red ? float3(0.0) : kc * p.uled.w * (0.60 + 0.40 * sp) * (0.50 + 0.50 * d)) + G * 0.5, 1.0);\n"
+    "  }\n"
+    "  float3 base = m == 4 ? tex.sample(smp, in.vuv).rgb : in.vcol.rgb;\n"
+    "  float sh = m == 4 ? 0.62 + 0.55 * d : 0.30 + 0.80 * d;\n"
+    "  return float4(base * sh * (m == 4 ? 1.0 : 0.75) + L * (m == 4 ? 0.30 : 0.18 * sp) + G * 0.7, 1.0);\n"
     "}\n";
 
-struct gfx_tex { id<MTLTexture> tex; };
+struct gfx_tex { id<MTLTexture> tex; id<MTLTexture> depth; int w, h; };
+struct gfx_mesh { id<MTLBuffer> vb, ib; int n; };
 
 #define INFLIGHT 3
 static id<MTLDevice> dev;
@@ -53,6 +93,9 @@ static gfx_tex *cur_tex;
 static int additive, frame_ok, committed;
 static struct { float res[2]; float pxs; float pad; } params;
 static int fb_w, fb_h;
+static int vp_x, vp_y, vp_w, vp_h; static float clear_rgb[3];               /* the window pass: its viewport and clear colour (a 3D pass in the middle of a frame ends it and starts it again with Load) */
+static id<MTLRenderPipelineState> pso_c64[2];                              /* 0 = opaque parts, 1 = the glass (premultiplied) */
+static id<MTLDepthStencilState> dss_write, dss_nowrite;
 
 Uint32 gfx_window_flags(void) { return SDL_WINDOW_METAL; }
 void gfx_window_attrs(void) {}
@@ -99,6 +142,27 @@ int gfx_init(SDL_Window *win, int max_vtx) {
         sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear; sd.mipFilter = MTLSamplerMipFilterLinear;
         sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
         sampler = [dev newSamplerStateWithDescriptor:sd];
+        {   /* the 3D C64: a vertex of gfx_v3 (position, uv, colour), an RGBA target with a depth buffer */
+            MTLVertexDescriptor *v3 = [MTLVertexDescriptor vertexDescriptor];
+            v3.attributes[0].format = MTLVertexFormatFloat3; v3.attributes[0].offset = 0;  v3.attributes[0].bufferIndex = 0;
+            v3.attributes[1].format = MTLVertexFormatFloat2; v3.attributes[1].offset = 12; v3.attributes[1].bufferIndex = 0;
+            v3.attributes[2].format = MTLVertexFormatUChar4Normalized; v3.attributes[2].offset = 20; v3.attributes[2].bufferIndex = 0;
+            v3.layouts[0].stride = 24; v3.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
+            for (int g = 0; g < 2; g++) {
+                MTLRenderPipelineDescriptor *d = [[MTLRenderPipelineDescriptor alloc] init];
+                d.vertexFunction = [lib newFunctionWithName:@"vs_c64"]; d.fragmentFunction = [lib newFunctionWithName:@"fs_c64"];
+                d.vertexDescriptor = v3; d.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+                MTLRenderPipelineColorAttachmentDescriptor *c = d.colorAttachments[0];
+                c.pixelFormat = MTLPixelFormatRGBA8Unorm; c.blendingEnabled = YES;
+                c.sourceRGBBlendFactor = c.sourceAlphaBlendFactor = g ? MTLBlendFactorOne : MTLBlendFactorSourceAlpha;      /* the glass is premultiplied (like gfx_gl.c) */
+                c.destinationRGBBlendFactor = c.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+                NSError *e3 = nil; pso_c64[g] = [dev newRenderPipelineStateWithDescriptor:d error:&e3];
+                if (!pso_c64[g]) fprintf(stderr, "Metal C64 pipeline: %s\n", e3.localizedDescription.UTF8String);
+            }
+            MTLDepthStencilDescriptor *dd = [[MTLDepthStencilDescriptor alloc] init];
+            dd.depthCompareFunction = MTLCompareFunctionLess; dd.depthWriteEnabled = YES; dss_write = [dev newDepthStencilStateWithDescriptor:dd];
+            dd.depthWriteEnabled = NO; dss_nowrite = [dev newDepthStencilStateWithDescriptor:dd];
+        }
         vcap = (size_t)max_vtx * sizeof(gfx_vtx);                       /* one frame's vertices: the batches of a frame lie behind each other */
         for (int i = 0; i < INFLIGHT; i++) vbuf[i] = [dev newBufferWithLength:vcap options:MTLResourceStorageModeShared];
         inflight = dispatch_semaphore_create(INFLIGHT);
@@ -149,7 +213,7 @@ gfx_tex *gfx_tex_create(int w, int h, int channels, const void *px) {
         [be generateMipmapsForTexture:t];
         [be endEncoding];
         [cb commit]; [cb waitUntilCompleted];
-        gfx_tex *g = (gfx_tex *)malloc(sizeof *g);
+        gfx_tex *g = (gfx_tex *)calloc(1, sizeof *g);
         if (!g) return NULL;
         g->tex = t;
         return g;
@@ -171,6 +235,7 @@ void gfx_frame_begin(int fw, int fh, int vx, int vy, int vw, int vh, float r, fl
         rp.colorAttachments[0].clearColor = MTLClearColorMake(r, g, b, 1);
         cmd = [queue commandBuffer];
         enc = [cmd renderCommandEncoderWithDescriptor:rp];
+        vp_x = vx; vp_y = vy; vp_w = vw; vp_h = vh; clear_rgb[0] = r; clear_rgb[1] = g; clear_rgb[2] = b;
         MTLViewport vp = { (double)vx, (double)(fh - vy - vh), (double)vw, (double)vh, 0, 1 };   /* Metal counts y from the top, gfx.h from the bottom */
         [enc setViewport:vp];
         [enc setRenderPipelineState:pso[0]];
@@ -195,6 +260,82 @@ void gfx_draw(const gfx_vtx *v, int n) {
     if (cur_tex) [enc setFragmentTexture:cur_tex->tex atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:(NSUInteger)n];
     voff += bytes;
+}
+
+/* ---------------------------------------------------------------- the 3D C64 */
+gfx_mesh *gfx_mesh_create(const gfx_v3 *verts, int nverts, const uint16_t *idx, int nidx) {
+    gfx_mesh *m = (gfx_mesh *)calloc(1, sizeof *m);
+    if (!m) return NULL;
+    if (nverts <= 0 || nidx <= 0) return m;
+    m->vb = [dev newBufferWithBytes:verts length:(NSUInteger)(sizeof(gfx_v3) * (size_t)nverts) options:MTLResourceStorageModeShared];
+    m->ib = [dev newBufferWithBytes:idx length:(NSUInteger)(sizeof(uint16_t) * (size_t)nidx) options:MTLResourceStorageModeShared];
+    if (m->vb && m->ib) m->n = nidx; else { m->vb = nil; m->ib = nil; }
+    return m;
+}
+int gfx_target_v_flipped(void) { return 0; }
+gfx_tex *gfx_target_create(int w, int h) {
+    @autoreleasepool {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; td.storageMode = MTLStorageModePrivate;
+        MTLTextureDescriptor *dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+        dd.usage = MTLTextureUsageRenderTarget; dd.storageMode = MTLStorageModePrivate;
+        gfx_tex *t = (gfx_tex *)calloc(1, sizeof *t);
+        if (!t) return NULL;
+        t->tex = [dev newTextureWithDescriptor:td]; t->depth = [dev newTextureWithDescriptor:dd]; t->w = w; t->h = h;
+        if (!t->tex || !t->depth) { t->tex = nil; t->depth = nil; return NULL; }
+        return t;
+    }
+}
+/* a window pass again after the off-screen pass in the middle of the frame (Load: what was drawn so far stays) */
+static void window_pass_resume(void) {
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = drawable.texture;
+    rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    enc = [cmd renderCommandEncoderWithDescriptor:rp];
+    MTLViewport v = { (double)vp_x, (double)(fb_h - vp_y - vp_h), (double)vp_w, (double)vp_h, 0, 1 };
+    [enc setViewport:v];
+    [enc setRenderPipelineState:pso[additive ? 1 : 0]];
+    [enc setFragmentSamplerState:sampler atIndex:0];
+}
+void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh *solid, gfx_mesh *keys, gfx_tex *keys_tex, gfx_mesh *badge, gfx_tex *badge_tex, gfx_mesh *glass, gfx_mesh *leds, const float *led, const float *pts) {
+    (void)keys_tex;
+    if (!frame_ok || !target || !target->tex || !pso_c64[0] || !pso_c64[1]) return;
+    struct { float mvp[16], mv[16], uled[4], pts[24]; int umode, pad[3]; } p;
+    memcpy(p.mvp, mvp, sizeof p.mvp); memcpy(p.mv, mv, sizeof p.mv); memcpy(p.uled, led, sizeof p.uled); memcpy(p.pts, pts, sizeof p.pts); memset(p.pad, 0, sizeof p.pad);
+    [enc endEncoding]; enc = nil;
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = target->tex; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore; rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+    rp.depthAttachment.texture = target->depth; rp.depthAttachment.loadAction = MTLLoadActionClear;
+    rp.depthAttachment.storeAction = MTLStoreActionDontCare; rp.depthAttachment.clearDepth = 1.0;
+    id<MTLRenderCommandEncoder> e = [cmd renderCommandEncoderWithDescriptor:rp];
+    MTLViewport v = { 0, 0, (double)target->w, (double)target->h, 0, 1 };
+    [e setViewport:v];
+    [e setFrontFacingWinding:MTLWindingCounterClockwise];                /* like OpenGL: the glass is drawn far side first (cull front), then near side (cull back) */
+    [e setFragmentSamplerState:sampler atIndex:0];
+    [e setRenderPipelineState:pso_c64[0]]; [e setDepthStencilState:dss_write]; [e setCullMode:MTLCullModeNone];
+    gfx_mesh *om[4] = { solid, keys, badge, leds }; const int mode[4] = { 0, 1, 4, 3 };
+    for (int i = 0; i < 4; i++) {
+        gfx_mesh *m = om[i];
+        if (!m || m->n <= 0 || !m->ib || !m->vb) continue;                 /* an indexed draw without an index buffer crashes the GPU driver */
+        p.umode = mode[i];
+        [e setVertexBuffer:m->vb offset:0 atIndex:0]; [e setVertexBytes:&p length:sizeof p atIndex:1]; [e setFragmentBytes:&p length:sizeof p atIndex:1];
+        [e setFragmentTexture:(i == 2 && badge_tex ? badge_tex->tex : target->tex) atIndex:0];
+        [e drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:(NSUInteger)m->n indexType:MTLIndexTypeUInt16 indexBuffer:m->ib indexBufferOffset:0];
+    }
+    if (glass && glass->n > 0 && glass->ib && glass->vb) {
+        p.umode = 2;
+        [e setRenderPipelineState:pso_c64[1]]; [e setDepthStencilState:dss_nowrite];
+        [e setVertexBuffer:glass->vb offset:0 atIndex:0]; [e setVertexBytes:&p length:sizeof p atIndex:1]; [e setFragmentBytes:&p length:sizeof p atIndex:1];
+        [e setFragmentTexture:target->tex atIndex:0];
+        for (int pass = 0; pass < 2; pass++) {
+            [e setCullMode:pass == 0 ? MTLCullModeFront : MTLCullModeBack];
+            [e drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:(NSUInteger)glass->n indexType:MTLIndexTypeUInt16 indexBuffer:glass->ib indexBufferOffset:0];
+        }
+    }
+    [e endEncoding];
+    window_pass_resume();
 }
 
 static volatile float last_gpu_ms;

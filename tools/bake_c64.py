@@ -18,6 +18,7 @@ Q = 20000.0
 HALF = 0.2
 # the keyboard of the 8580R5 (C64C) model sits too far back: the part with the vents (back) has to be about twice as long, so the keyboard, its plate, the badge and the LEDs move to the front
 SHIFT_Z = {'C64_8580': 0.045}
+BACK = {'C64_8580': (-0.052, 2.0)}                 # (z of the drop, factor): the rear part (from the drop of the keyboard to the back edge, with the vents) is twice as long; the rest of the case stays
 MOVES = ('Keys_body', 'Keys_top', 'FKeyPlate', 'Badge', 'LED0', 'LED1', 'LED2', 'LED3')
 SKIP = ('KeyPlate',)                    # the black plate under the keys: the real case has none
 TEX = ((1024, 256), (512, 64))         # the keys picture (2048 x 512) and the badge (about 800 x 110), scaled
@@ -54,6 +55,13 @@ def bake(path, tag):
         p, _ = acc(j, b, pr['attributes']['POSITION'])
         if n.get('name') in MOVES and SHIFT_Z.get(tag):
             p = p.copy(); p[:, 2] += SHIFT_Z[tag]
+        elif tag in BACK:
+            z0, f = BACK[tag]; p = p.copy()
+            if n.get('name') in ('Case_milky', 'PCB'):                 # the shell and the board: the part behind the drop is stretched
+                back = p[:, 2] < z0; p[back, 2] = z0 + (p[back, 2] - z0) * f
+            else:                                                      # small parts (ports, LED, components): moved with their place, not stretched
+                zc = float(p[:, 2].mean())
+                if zc < z0: p[:, 2] += (z0 + (zc - z0) * f) - zc
         idx, _ = acc(j, b, pr['indices'])
         mat = j['materials'][pr['material']]
         pb = mat['pbrMetallicRoughness']

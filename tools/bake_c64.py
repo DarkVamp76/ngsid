@@ -17,8 +17,7 @@ from glb import load, acc
 Q = 20000.0
 HALF = 0.2
 # the keyboard of the 8580R5 (C64C) model sits too far back: the part with the vents (back) has to be about twice as long, so the keyboard, its plate, the badge and the LEDs move to the front
-SHIFT_Z = {'C64_8580': 0.030}                     # (the user's drawing: the keys start 1.5 cm further back than at 0.045)
-STRETCH = {'C64_8580': (-0.030, -0.020)}           # (z cut, dz): everything of the case behind the cut moves 2 cm back: the part with the vents is longer
+SHIFT_Z = {'C64_8580': 0.045}
 MOVES = ('Keys_body', 'Keys_top', 'FKeyPlate', 'Badge', 'LED0', 'LED1', 'LED2', 'LED3')
 SKIP = ('KeyPlate',)                    # the black plate under the keys: the real case has none
 TEX = ((1024, 256), (512, 64))         # the keys picture (2048 x 512) and the badge (about 800 x 110), scaled
@@ -55,8 +54,6 @@ def bake(path, tag):
         p, _ = acc(j, b, pr['attributes']['POSITION'])
         if n.get('name') in MOVES and SHIFT_Z.get(tag):
             p = p.copy(); p[:, 2] += SHIFT_Z[tag]
-        elif tag in STRETCH and n.get('name') not in MOVES:
-            p = p.copy(); cut, dz = STRETCH[tag]; p[p[:, 2] < cut, 2] += dz
         idx, _ = acc(j, b, pr['indices'])
         mat = j['materials'][pr['material']]
         pb = mat['pbrMetallicRoughness']

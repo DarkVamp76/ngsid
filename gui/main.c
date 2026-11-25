@@ -3372,7 +3372,9 @@ int main(int argc, char **argv) {
 #endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     gfx_window_attrs();
-    win = SDL_CreateWindow("ngSid", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 860,
+    int test_w = 1280, test_h = 860;                                  /* test hook: NGSID_TEST_SIZE="w,h" (whole numbers), e.g. 400,860 for a phone */
+    { const char *e = getenv("NGSID_TEST_SIZE"); int a, b; if (e && sscanf(e, "%d,%d", &a, &b) == 2 && a >= 200 && b >= 200) { test_w = a; test_h = b; } }
+    win = SDL_CreateWindow("ngSid", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, test_w, test_h,
                                        gfx_window_flags() | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (!win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
     SDL_SetWindowMinimumSize(win, 360, 480);      /* narrow is fine: the portrait layout takes over */

@@ -80,9 +80,15 @@ static void c64d_picture(gfx_tex *t, float x, float y, float w, float h) {
 static const char *c64d_chip(int model) { return model == 8580 ? "CSG 8580R5" : "MOS 6581R4"; }
 
 /* one row of the table: label, value; returns the next y */
-static float c64d_row(float rx, float ty, float rw, float k, const char *label, const char *value, col vc) {
-    text(rx, ty + 3 * k, 12 * k, FAINT, label);
+static float c64d_row(float rx, float ty, float rw, float k, const char *label, const char *value, col vc, int stack) {
     char v[200]; snprintf(v, sizeof v, "%s", value);
+    if (stack) {                                      /* a narrow field (phone upright): the label small above the value, the value gets the whole width */
+        text(rx, ty, 11 * k, FAINT, label);
+        fit_text(v, rw, 16 * k);
+        text(rx, ty + 13 * k, 16 * k, vc, v);
+        return ty + 38 * k;
+    }
+    text(rx, ty + 3 * k, 12 * k, FAINT, label);
     fit_text(v, rw - 108 * k, 16 * k);
     text(rx + 108 * k, ty, 16 * k, vc, v);
     return ty + 28 * k;
@@ -133,7 +139,8 @@ static void draw_info(float x, float y, float w, float h, float dtf) {
     float t = c64d_t, hue = c64d_hue, drift = c64d_drift, glow = c64d_glow;
 
     /* the picture on the left */
-    float bw = w * 0.5f; if (bw > 640) bw = 640;
+    int narrow = w < 520;                                            /* upright phone: the picture is narrower, the rows are stacked (label above the value) */
+    float bw = w * (narrow ? 0.40f : 0.5f); if (bw > 640) bw = 640;
     float px = x + 8, py = y + 26, pw = bw, ph = h - 34;
     C64Gl *g = &c64gl[mi];
     c64d_setup(mi);
@@ -152,49 +159,51 @@ static void draw_info(float x, float y, float w, float h, float dtf) {
     float rx = x + bw + 14, rw = w - bw - 14 - 24;
     char b[260], b2[80];
     int rows = 9 + (tn->info.sid2 ? 1 : 0) + (cur >= 0 && cur < npl && pl[cur].rel ? 1 : 0);
-    float k = (h - 52) / ((float)rows * 28.0f + 60.0f); if (k > 1.25f) k = 1.25f; if (k < 0.6f) k = 0.6f;
-    float need = 40 * k + 12 * k + rows * 28 * k;
+    float rowp = narrow ? 38.0f : 28.0f;
+    float k = (h - 52) / ((float)rows * rowp + 60.0f); if (k > 1.25f) k = 1.25f; if (k < 0.6f) k = 0.6f;
+    float need = 40 * k + 12 * k + rows * rowp * k;
     float ty = y + (h - need) / 2; if (ty < y + 26) ty = y + 26;
     snprintf(b, sizeof b, "%s", tn->info.name[0] ? tn->info.name : (cur >= 0 ? pl[cur].label : ""));
-    fit_text(b, rw, 26 * k);
-    text(rx, ty, 26 * k, TXT, b);
+    float tsz = (narrow ? 20.0f : 26.0f) * k;
+    fit_text(b, rw, tsz);
+    text(rx, ty, tsz, TXT, b);
     ty += 40 * k; rect(rx, ty, rw, 1, alpha(EDGE, 0.5f)); ty += 12 * k;
-    ty = c64d_row(rx, ty, rw, k, "AUTHOR", tn->info.author[0] ? tn->info.author : "-", TXT);
-    ty = c64d_row(rx, ty, rw, k, "RELEASED", tn->info.released[0] ? tn->info.released : "-", TXT);
+    ty = c64d_row(rx, ty, rw, k, "AUTHOR", tn->info.author[0] ? tn->info.author : "-", TXT, narrow);
+    ty = c64d_row(rx, ty, rw, k, "RELEASED", tn->info.released[0] ? tn->info.released : "-", TXT, narrow);
     snprintf(b, sizeof b, "%s, version %d", tn->info.rsid ? "RSID" : "PSID", tn->info.version);
-    ty = c64d_row(rx, ty, rw, k, "FORMAT", b, TXT);
+    ty = c64d_row(rx, ty, rw, k, "FORMAT", b, TXT, narrow);
     static const char *const clk[4] = { "not given", "PAL", "NTSC", "PAL or NTSC" };
     snprintf(b, sizeof b, "%s  (tune: %s)", tn->pal ? "PAL" : "NTSC", clk[tn->info.clock & 3]);
-    ty = c64d_row(rx, ty, rw, k, "CLOCK", b, TXT);
+    ty = c64d_row(rx, ty, rw, k, "CLOCK", b, TXT, narrow);
     b[0] = 0;
     for (int i = 0; i < tn->nsid && i < 3; i++) { snprintf(b2, sizeof b2, "%s%s", i ? " + " : "", c64d_chip(tn->model[i])); strncat(b, b2, sizeof b - strlen(b) - 1); }
-    ty = c64d_row(rx, ty, rw, k, "SID CHIP", b[0] ? b : c64d_chip(6581), VC[2]);
+    ty = c64d_row(rx, ty, rw, k, "SID CHIP", b[0] ? b : c64d_chip(6581), VC[2], narrow);
     snprintf(b, sizeof b, "%d  (start %d, playing %d)", tn->info.songs, tn->info.start_song, tn->song);
-    ty = c64d_row(rx, ty, rw, k, "SONGS", b, TXT);
+    ty = c64d_row(rx, ty, rw, k, "SONGS", b, TXT, narrow);
     snprintf(b, sizeof b, "load $%04X   init $%04X   play $%04X", tn->info.load, tn->info.init, tn->info.play);
-    ty = c64d_row(rx, ty, rw, k, "ADDRESSES", b, TXT);
+    ty = c64d_row(rx, ty, rw, k, "ADDRESSES", b, TXT, narrow);
     if (tn->info.sid2) {
         snprintf(b, sizeof b, "SID 2 $%04X%s", tn->info.sid2, tn->info.sid3 ? "" : "");
         if (tn->info.sid3) { snprintf(b2, sizeof b2, "   SID 3 $%04X", tn->info.sid3); strncat(b, b2, sizeof b - strlen(b) - 1); }
-        ty = c64d_row(rx, ty, rw, k, "MORE SIDS", b, TXT);
+        ty = c64d_row(rx, ty, rw, k, "MORE SIDS", b, TXT, narrow);
     }
     if (cur >= 0 && cur < npl && pl[cur].rel) {
 #if defined(__APPLE__) && TARGET_OS_TV
-        ty = c64d_row(rx, ty, rw, k, "HVSC", pl[cur].rel, DIM);                   /* the Apple TV has no pointer */
+        ty = c64d_row(rx, ty, rw, k, "HVSC", pl[cur].rel, DIM, narrow);                   /* the Apple TV has no pointer */
 #else
         /* the HVSC path is a link: the tune on DeepSID (the same page as Info in the list menu) */
-        float vx = rx + 108 * k, vs = 16 * k;
+        float vx = narrow ? rx : rx + 108 * k, vs = 16 * k, vy = narrow ? ty + 13 * k : ty;       /* narrow: the label above, the link below it over the whole width */
         char v[200]; snprintf(v, sizeof v, "%s", pl[cur].rel);
-        fit_text(v, rw - 108 * k, vs);
+        fit_text(v, rw - (narrow ? 0 : 108 * k), vs);
         float tw = text_width(v, vs);
-        int hv = hit(vx - 4, ty - 3, tw + 8, vs + 8);
-        text(rx, ty + 3 * k, 12 * k, FAINT, "HVSC");
-        text(vx, ty, vs, hv ? TXT : VC[0], v);
-        rect(vx, ty + vs + 2, tw, 1, alpha(hv ? TXT : VC[0], 0.7f));
-        if (clicked(vx - 4, ty - 3, tw + 8, vs + 8)) { open_deepsid(pl[cur].rel); click = 0; }
-        ty += 28 * k;
+        int hv = hit(vx - 4, vy - 3, tw + 8, vs + 8);
+        if (narrow) text(rx, ty, 11 * k, FAINT, "HVSC"); else text(rx, ty + 3 * k, 12 * k, FAINT, "HVSC");
+        text(vx, vy, vs, hv ? TXT : VC[0], v);
+        rect(vx, vy + vs + 2, tw, 1, alpha(hv ? TXT : VC[0], 0.7f));
+        if (clicked(vx - 4, vy - 3, tw + 8, vs + 8)) { open_deepsid(pl[cur].rel); click = 0; }
+        ty += (narrow ? 38 : 28) * k;
 #endif
     }
     snprintf(b, sizeof b, "%zu bytes", tn->len);
-    ty = c64d_row(rx, ty, rw, k, "SIZE", b, DIM);
+    ty = c64d_row(rx, ty, rw, k, "SIZE", b, DIM, narrow);
 }

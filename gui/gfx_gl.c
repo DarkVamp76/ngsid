@@ -326,9 +326,9 @@ static const char *C64_FS =
     "  vec3 lc=hsv(uled.x+vp.x*uled.y*2.0+vp.z*0.5,0.9,1.0);\n"
     "  o=vec4(mix(vcol.rgb,lc,0.75)*(0.8+1.6*uled.w),1.0); }\n"
     " else {\n"
-    "  vec3 base=umode==1?texture(tex,vuv).rgb:vcol.rgb;\n"
-    "  float sh=umode==1?0.62+0.55*d:0.36+0.64*d;\n"
-    "  o=vec4(base*sh+L*(umode==1?0.75*sp:0.30*sp),1.0); } }\n";
+    "  vec3 base=umode==4?texture(tex,vuv).rgb:vcol.rgb;\n"
+    "  float sh=umode==4?0.62+0.55*d:0.30+0.80*d;\n"
+    "  o=vec4(base*sh+L*(umode==1?0.62*sp:(umode==4?0.30:0.30*sp)),1.0); } }\n";
 
 static GLuint c64_prog; static GLint c64_mvp, c64_mv, c64_umode, c64_utex, c64_uled;
 
@@ -392,9 +392,11 @@ void gfx_c64_render(gfx_tex *target, const float *mvp, const float *mv, gfx_mesh
     glActiveTexture(GL_TEXTURE0);
     glBindVertexArray(solid->vao); glUniform1i(c64_umode, 0);
     glDrawElements(GL_TRIANGLES, solid->n, GL_UNSIGNED_SHORT, (const void *)0);
+    (void)keys_tex;                                                    /* the keys are 3D caps in one dark colour, lit from below: no picture */
     glUniform1i(c64_umode, 1);
-    glBindTexture(GL_TEXTURE_2D, keys_tex->id); glBindVertexArray(keys->vao);
+    glBindVertexArray(keys->vao);
     glDrawElements(GL_TRIANGLES, keys->n, GL_UNSIGNED_SHORT, (const void *)0);
+    glUniform1i(c64_umode, 4);
     glBindTexture(GL_TEXTURE_2D, badge_tex->id); glBindVertexArray(badge->vao);
     glDrawElements(GL_TRIANGLES, badge->n, GL_UNSIGNED_SHORT, (const void *)0);
     if (leds) { glUniform1i(c64_umode, 3); glBindVertexArray(leds->vao); glDrawElements(GL_TRIANGLES, leds->n, GL_UNSIGNED_SHORT, (const void *)0); }

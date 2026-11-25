@@ -41,6 +41,8 @@ def bake(path, tag):
     j, b = load(path)
     parts = {k: ([], [], [], []) for k in ('solid', 'keys', 'badge', 'glass', 'led')}      # positions, uvs, colours, indices
     base = {k: 0 for k in parts}
+    fk = [acc(j, b, j['meshes'][n['mesh']]['primitives'][0]['attributes']['POSITION'])[0] for n in j['nodes'] if n.get('name') == 'FKeyPlate']
+    FK_X = float(fk[0][:, 0].min()) - 0.003 if fk else 9.0          # keys right of this x are the four function keys (red)
     for n in j['nodes']:
         pr = j['meshes'][n['mesh']]['primitives'][0]
         p, _ = acc(j, b, pr['attributes']['POSITION'])
@@ -59,7 +61,11 @@ def bake(path, tag):
             if kind == 'glass': col[3] = 128                      # every case is equally milky (alpha 0.5)
             uv = np.zeros((len(p), 2), dtype=np.float32)
         P, U, C, I = parts[kind]
-        P.append(p.astype(np.float64)); U.append(uv.astype(np.float64)); C.append(np.tile(np.array(col, dtype=np.uint8), (len(p), 1)))
+        cols = np.tile(np.array(col, dtype=np.uint8), (len(p), 1))
+        if n.get('name') in ('Keys_top', 'Keys_body'):                # 3D keys without a picture: dark caps, the function keys red
+            cols[:] = (24, 24, 28, 255)
+            cols[p[:, 0] >= FK_X] = (196, 28, 24, 255)
+        P.append(p.astype(np.float64)); U.append(uv.astype(np.float64)); C.append(cols)
         I.append(idx.astype(np.int64) + base[kind]); base[kind] += len(p)
     # the model lies flat, x along the case: normalise so that x is -1..1 and the middle is at the origin
     allp = np.vstack([np.vstack(parts[k][0]) for k in parts if parts[k][0]])

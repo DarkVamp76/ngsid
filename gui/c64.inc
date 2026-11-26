@@ -135,7 +135,9 @@ static void draw_info(float x, float y, float w, float h, float dtf) {
     /* the picture on the left */
     const int narrow = w < 520;                                      /* upright phone: the picture on top (the full width), the table below it (the full width too) */
     float bw = narrow ? w - 16 : w * 0.5f; if (bw > 640) bw = 640;
-    float px = x + 8, py = y + 26, pw = bw, ph = narrow ? fminf(h * 0.30f, 150.0f) : h - 34;
+    float px = x + 8, py = y + 26, pw = bw, ph = narrow ? fminf(h * 0.36f, 180.0f) : h - 34;
+    int rows0 = 9 + (tn->info.sid2 ? 1 : 0) + (cur >= 0 && cur < npl && pl[cur].rel ? 1 : 0);
+    if (narrow) { float mx = h - 26 - 12 - 8 - 0.62f * ((float)rows0 * 28.0f + 60.0f); if (ph > mx) ph = mx; if (ph < 60) ph = 60; }      /* the picture gets what the table does not need */
     C64Gl *g = &c64gl[mi];
     c64d_setup(mi);
     if (g->ready > 0) {

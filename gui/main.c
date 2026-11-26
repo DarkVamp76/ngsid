@@ -2106,6 +2106,8 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
 
     /* ---------------- vertical budget */
     float by = H - M - BOT, sh = g_duo ? 88.0f : (H < 720 ? 80 : 96), sy = by - M - sh, fh = 46, fy = sy - M - fh;   /* low windows: flatter spectrum card */
+    const int nospec = !g_duo && !NG_TV && H < 760;                       /* a short upright screen (iPad): no spectrum and level, the room goes to the middle card */
+    if (nospec) { sh = 0; sy = by + M; fy = sy - M - fh; }
     float cy0 = hy + hh + M, midh = fy - M - cy0;
     const float tv_side = NG_TV && nsid == 1 ? (aw - 2 * gap) / 3 : 0;   /* Apple TV, one SID: three square voice cards in one row */
     if (NG_TV) {
@@ -2175,8 +2177,8 @@ static void draw_ui_portrait(const vis_t *vs, double t, double dt) {
             }
         }
         float vuw = 130, spw = aw - vuw - M;
-        draw_spectrum_card(M, sy, spw, sh);
-        draw_level_card(M + spw + M, sy, vuw, sh);
+        if (!nospec) { draw_spectrum_card(M, sy, spw, sh);
+        draw_level_card(M + spw + M, sy, vuw, sh); }
     }
 
     /* ---------------- transport */
